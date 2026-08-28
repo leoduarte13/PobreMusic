@@ -202,38 +202,127 @@ async function getEffectiveSpotifyToken(req: express.Request): Promise<{ token: 
 }
 
 // Helper: Extract Spotify Resource ID & Type from ID or URL
-function extractPlaylistId(input: string): string {
-  if (!input) return "";
+function parseSpotifyResource(input: string): { id: string; type: "playlist" | "album" | "track" | "preset" } {
+  if (!input) return { id: "", type: "playlist" };
   const trimmed = input.trim();
 
   // 1. Direct match for presets
   if (PRESET_PLAYLISTS[trimmed]) {
-    return trimmed;
+    return { id: trimmed, type: "preset" };
   }
 
   // 2. Normalized preset match (e.g. "tophits" -> "top_hits")
   const normalizedInput = trimmed.toLowerCase().replace(/[^a-z0-9]/g, "");
   for (const key of Object.keys(PRESET_PLAYLISTS)) {
     if (key.toLowerCase().replace(/[^a-z0-9]/g, "") === normalizedInput) {
-      return key;
+      return { id: key, type: "preset" };
     }
   }
 
   // 3. Handles URLs like: https://open.spotify.com/(intl-xx/)?(playlist|album|track)/37i9dQZF1DXcBWIGoYBM5M?si=...
-  const urlMatch = trimmed.match(/(?:intl-[a-z]{2}\/)?(?:playlist|album|track)\/([a-zA-Z0-9]+)/i);
-  if (urlMatch && urlMatch[1]) {
-    return urlMatch[1];
+  const urlMatch = trimmed.match(/(?:intl-[a-z]{2}\/)?(playlist|album|track)\/([a-zA-Z0-9]+)/i);
+  if (urlMatch && urlMatch[1] && urlMatch[2]) {
+    return {
+      type: urlMatch[1].toLowerCase() as "playlist" | "album" | "track",
+      id: urlMatch[2],
+    };
   }
 
   // 4. Handles URIs like: spotify:(playlist|album|track):37i9dQZF1DXcBWIGoYBM5M
-  const uriMatch = trimmed.match(/spotify:(?:playlist|album|track):([a-zA-Z0-9]+)/i);
-  if (uriMatch && uriMatch[1]) {
-    return uriMatch[1];
+  const uriMatch = trimmed.match(/spotify:(playlist|album|track):([a-zA-Z0-9]+)/i);
+  if (uriMatch && uriMatch[1] && uriMatch[2]) {
+    return {
+      type: uriMatch[1].toLowerCase() as "playlist" | "album" | "track",
+      id: uriMatch[2],
+    };
   }
 
   // 5. Handles raw Spotify ID (e.g. 37i9dQZF1DXcBWIGoYBM5M)
   const cleanId = trimmed.split("?")[0].replace(/[^a-zA-Z0-9]/g, "");
-  return cleanId;
+  return { id: cleanId, type: "playlist" };
+}
+
+function extractPlaylistId(input: string): string {
+  return parseSpotifyResource(input).id;
+}
+
+/**
+ * Robust extraction of real tracks from Spotify Embed HTML (zero credentials required)
+ */
+async function extractFromSpotifyEmbed(type: "playlist" | "album" | "track", id: string) {
+  try {
+    const embedUrl = `https://open.spotify.com/embed/${type}/${id}`;
+    const res = await fetch(embedUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9,pt-BR;q=0.8",
+      },
+    });
+
+    if (!res.ok) {
+      console.warn(`[Spotify Embed] Returned status ${res.status} for ${embedUrl}`);
+      return null;
+    }
+
+    const html = await res.text();
+    const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">([^<]+)<\/script>/);
+    if (!match || !match[1]) return null;
+
+    const data = JSON.parse(match[1]);
+    const entity = data?.props?.pageProps?.state?.data?.entity;
+    if (!entity) return null;
+
+    const playlistName = entity.title || entity.name || (type === "album" ? "Álbum do Spotify" : "Playlist do Spotify");
+    const coverUrl = entity.coverArt?.sources?.[0]?.url || "";
+    const description = entity.subtitle ? `Por ${entity.subtitle}` : "Sincronizada via Spotify";
+
+    let rawList: any[] = [];
+    if (Array.isArray(entity.trackList) && entity.trackList.length > 0) {
+      rawList = entity.trackList;
+    } else if (entity.entityType === "track" || type === "track") {
+      rawList = [entity];
+    }
+
+    if (rawList.length === 0) return null;
+
+    const faixas = rawList.map((item: any) => {
+      const nomeMusica = item.title || item.name || "Sem título";
+      let nomeArtista = item.subtitle || "";
+      if (!nomeArtista && Array.isArray(item.artists)) {
+        nomeArtista = item.artists.map((a: any) => (typeof a === "string" ? a : a.name)).join(", ");
+      }
+      if (!nomeArtista) nomeArtista = "Artista Desconhecido";
+
+      const duracaoMs = item.duration || item.duration_ms || 200000;
+      const album = type === "album" ? playlistName : (item.album?.name || playlistName);
+      const capa = item.coverArt?.sources?.[0]?.url || coverUrl;
+      const spotifyId = item.uri ? item.uri.replace("spotify:track:", "") : (item.id || "");
+
+      return {
+        nome_musica: nomeMusica,
+        nome_artista: nomeArtista,
+        duracao_ms: duracaoMs,
+        album,
+        capa,
+        spotify_id: spotifyId,
+      };
+    });
+
+    return {
+      sucesso: true,
+      playlist_id: id,
+      nome_playlist: playlistName,
+      descricao: description,
+      capa_playlist: coverUrl,
+      total_faixas: faixas.length,
+      faixas,
+      modo: "spotify_embed_extractor",
+    };
+  } catch (err) {
+    console.warn("[Spotify Embed] Error extracting tracks:", err);
+    return null;
+  }
 }
 
 // Preset demo playlist fallback when credentials are not configured or for quick testing
@@ -859,7 +948,9 @@ app.get("/api/playlist-tracks", async (req, res) => {
 app.all(["/api/playlist", "/api/playlist/:id"], async (req, res) => {
   try {
     const rawInput = (req.params.id || req.query.id || req.query.url || req.body?.id || req.body?.url || req.body?.playlistId || "") as string;
-    const playlistId = extractPlaylistId(rawInput);
+    const parsedResource = parseSpotifyResource(rawInput);
+    const playlistId = parsedResource.id;
+    const resourceType = parsedResource.type === "preset" ? "playlist" : parsedResource.type;
 
     if (!playlistId) {
       return res.status(400).json({ 
@@ -883,13 +974,25 @@ app.all(["/api/playlist", "/api/playlist/:id"], async (req, res) => {
       });
     }
 
-    // Get either user session token (authorized with playlist-read-private) or client credentials token
-    const { token: spotifyToken, isUserToken } = await getEffectiveSpotifyToken(req);
+    // 1. Direct Spotify Embed extraction (Most accurate, extracts actual playlist/album/track tracks without requiring credentials)
+    console.log(`[Spotify Embed Extractor] Tentando extrair faixas de ${resourceType}/${playlistId}...`);
+    const embedResult = await extractFromSpotifyEmbed(resourceType, playlistId);
+    if (embedResult && embedResult.faixas && embedResult.faixas.length > 0) {
+      console.log(`[Spotify Embed Extractor] Sucesso! ${embedResult.faixas.length} músicas extraídas de ${embedResult.nome_playlist}.`);
+      return res.json(embedResult);
+    }
 
-    // 1. If user is authenticated with OAuth or client credentials exist, try official Spotify API
+    // 2. If user is authenticated with OAuth or client credentials exist, try official Spotify API
+    const { token: spotifyToken, isUserToken } = await getEffectiveSpotifyToken(req);
     if (spotifyToken) {
       try {
-        const spotifyRes = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}?market=BR`, {
+        const endpoint = resourceType === "album"
+          ? `https://api.spotify.com/v1/albums/${playlistId}`
+          : resourceType === "track"
+          ? `https://api.spotify.com/v1/tracks/${playlistId}`
+          : `https://api.spotify.com/v1/playlists/${playlistId}?market=BR`;
+
+        const spotifyRes = await fetch(endpoint, {
           headers: {
             "Authorization": `Bearer ${spotifyToken}`,
           },
@@ -898,15 +1001,36 @@ app.all(["/api/playlist", "/api/playlist/:id"], async (req, res) => {
         if (spotifyRes.ok) {
           const data = await spotifyRes.json();
           
-          // Map to exact required JSON schema: [{ nome_musica, nome_artista }] + helper UI fields
-          const faixas = (data.tracks?.items || [])
-            .filter((item: any) => item?.track && item.track.name)
+          if (resourceType === "track") {
+            const trackItem = {
+              nome_musica: data.name,
+              nome_artista: (data.artists || []).map((a: any) => a.name).join(", "),
+              album: data.album?.name || "",
+              duracao_ms: data.duration_ms || 200000,
+              capa: data.album?.images?.[0]?.url || "",
+              spotify_id: data.id
+            };
+            return res.json({
+              sucesso: true,
+              playlist_id: data.id,
+              nome_playlist: data.name,
+              descricao: `Faixa por ${trackItem.nome_artista}`,
+              capa_playlist: trackItem.capa,
+              total_faixas: 1,
+              faixas: [trackItem],
+              modo: "spotify_web_api"
+            });
+          }
+
+          const rawItems = data.tracks?.items || [];
+          const faixas = rawItems
             .map((item: any) => {
-              const track = item.track;
+              const track = item?.track || item;
+              if (!track || !track.name) return null;
               const nomeMusica = track.name || "Sem título";
               const nomeArtista = (track.artists || []).map((a: any) => a.name).join(", ") || "Artista Desconhecido";
               const duracaoMs = track.duration_ms || 0;
-              const albumName = track.album?.name || "";
+              const albumName = track.album?.name || data.name || "";
               const capaImg = track.album?.images?.[0]?.url || data.images?.[0]?.url || "";
               const spotifyId = track.id || "";
 
@@ -918,28 +1042,21 @@ app.all(["/api/playlist", "/api/playlist/:id"], async (req, res) => {
                 capa: capaImg,
                 spotify_id: spotifyId
               };
-            });
+            })
+            .filter(Boolean);
 
-          return res.json({
-            sucesso: true,
-            playlist_id: data.id,
-            nome_playlist: data.name || "Playlist Spotify",
-            descricao: data.description || "",
-            capa_playlist: data.images?.[0]?.url || "",
-            total_faixas: faixas.length,
-            faixas: faixas,
-            isPrivate: data.public === false,
-            autenticado: isUserToken,
-            modo: isUserToken ? "spotify_oauth_user_session" : "spotify_client_credentials"
-          });
-        } else {
-          const errorText = await spotifyRes.text();
-          console.warn(`Spotify API returned ${spotifyRes.status} for playlist ${playlistId}:`, errorText);
-          
-          if ((spotifyRes.status === 404 || spotifyRes.status === 403) && isUserToken) {
-            return res.status(403).json({
-              error: "Esta playlist não pôde ser acessada pela sua conta Spotify.",
-              needsAuth: true,
+          if (faixas.length > 0) {
+            return res.json({
+              sucesso: true,
+              playlist_id: data.id,
+              nome_playlist: data.name || "Playlist Spotify",
+              descricao: data.description || "",
+              capa_playlist: data.images?.[0]?.url || (faixas[0] as any)?.capa || "",
+              total_faixas: faixas.length,
+              faixas: faixas,
+              isPrivate: data.public === false,
+              autenticado: isUserToken,
+              modo: isUserToken ? "spotify_oauth_user_session" : "spotify_client_credentials"
             });
           }
         }
@@ -948,23 +1065,16 @@ app.all(["/api/playlist", "/api/playlist/:id"], async (req, res) => {
       }
     }
 
-    // 2. Direct Spotify HTML scraping via spotify-url-info (works for ANY public playlist without API keys)
-    const canonicalPlaylistUrl = `https://open.spotify.com/playlist/${playlistId}`;
-
+    // 3. Direct Spotify HTML scraping via spotify-url-info
+    const canonicalPlaylistUrl = `https://open.spotify.com/${resourceType}/${playlistId}`;
     try {
-      console.log(`[spotify-url-info] Acessando página pública do Spotify: ${canonicalPlaylistUrl}`);
-      
       let playlistMeta: any = null;
       try {
         playlistMeta = await spotifyScraper.getData(canonicalPlaylistUrl);
-      } catch {
-        // Non-fatal, getTracks may still work
-      }
+      } catch {}
 
       const rawTracks = await spotifyScraper.getTracks(canonicalPlaylistUrl);
-      
       if (rawTracks && Array.isArray(rawTracks) && rawTracks.length > 0) {
-        // Format tracklist to [{ nome_musica, nome_artista }] + helper fields
         const formattedTracks = rawTracks.map((faixa: any) => {
           const nomeMusica = faixa.name || faixa.title || "Sem título";
           let nomeArtista = "Desconhecido";
@@ -992,8 +1102,6 @@ app.all(["/api/playlist", "/api/playlist/:id"], async (req, res) => {
           };
         });
 
-        console.log(`[spotify-url-info] Sucesso! ${formattedTracks.length} músicas encontradas.`);
-
         return res.json({
           sucesso: true,
           playlist_id: playlistId,
@@ -1009,39 +1117,11 @@ app.all(["/api/playlist", "/api/playlist/:id"], async (req, res) => {
       console.warn("[spotify-url-info] Scraper notice:", scraperErr.message);
     }
 
-    // Fallback: If Spotify API failed or no credentials, check if public embed/oEmbed can resolve name
-    try {
-      const oembedRes = await fetch(`https://open.spotify.com/oembed?url=https://open.spotify.com/playlist/${playlistId}`);
-      if (oembedRes.ok) {
-        const oembed = await oembedRes.json();
-        const sampleTracks = PRESET_PLAYLISTS["top_hits"].tracks;
-        return res.json({
-          sucesso: true,
-          playlist_id: playlistId,
-          nome_playlist: oembed.title || "Playlist Spotify",
-          descricao: "Carregada via Spotify Embed. Faça login ou adicione SPOTIFY_CLIENT_ID no .env para acesso completo à API.",
-          capa_playlist: oembed.thumbnail_url || PRESET_PLAYLISTS["top_hits"].cover,
-          total_faixas: sampleTracks.length,
-          faixas: sampleTracks,
-          modo: "fallback_oembed",
-          aviso: "Para carregar qualquer playlist privada em tempo real, clique em 'Conectar Spotify'."
-        });
-      }
-    } catch (e) {
-      console.warn("oEmbed fetch failed:", e);
-    }
-
-    // Default fallback to Top Hits preset if ID not found
-    const defaultPreset = PRESET_PLAYLISTS["top_hits"];
-    return res.json({
-      sucesso: true,
+    // 4. If all fail, return explicit error rather than substituting random songs
+    return res.status(404).json({
+      sucesso: false,
+      error: "Não foi possível carregar as faixas deste link do Spotify. Verifique se o link está correto e se a playlist é pública, ou conecte sua conta do Spotify para playlists privadas.",
       playlist_id: playlistId,
-      nome_playlist: `Playlist (${playlistId.substring(0, 8)}...)`,
-      descricao: "Playlist de demonstração ativa. Configure suas credenciais do Spotify no .env para ler qualquer playlist em tempo real.",
-      capa_playlist: defaultPreset.cover,
-      total_faixas: defaultPreset.tracks.length,
-      faixas: defaultPreset.tracks,
-      modo: "demo_fallback"
     });
 
   } catch (error: any) {

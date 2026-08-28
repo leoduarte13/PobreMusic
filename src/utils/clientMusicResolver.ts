@@ -471,13 +471,29 @@ export async function fetchPlaylistSafe(
     }
   }
 
-  // 8. Safe fallback to default Top Hits
+  // 8. If this was a Spotify link/URI/ID and we could not extract tracks, return explicit failure
+  const isLikelySpotify = urlOrId.includes("spotify.com") || urlOrId.startsWith("spotify:") || (cleanId.length === 22 && !urlOrId.includes(" "));
+  if (isLikelySpotify) {
+    return {
+      data: {
+        sucesso: false,
+        playlist_id: cleanId,
+        nome_playlist: "Playlist não encontrada",
+        descricao: "Não foi possível carregar as músicas deste link. Verifique se a playlist é pública ou faça login no Spotify para playlists privadas.",
+        capa_playlist: "",
+        total_faixas: 0,
+        faixas: [],
+      },
+    };
+  }
+
+  // 9. Fallback only for general search terms
   const defaultFallback = PRESET_FALLBACK_TRACKS["top_hits"];
   return {
     data: {
       ...defaultFallback,
-      nome_playlist: `Playlist Spotify (${cleanId.substring(0, 10)}...)`,
-      descricao: "Músicas carregadas com sucesso via modo de compatibilidade.",
+      nome_playlist: `Resultados para "${urlOrId.trim()}"`,
+      descricao: "Músicas recomendadas com base na sua busca.",
     },
   };
 }

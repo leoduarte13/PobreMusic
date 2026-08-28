@@ -17,7 +17,9 @@ import {
   CheckSquare,
   Square,
   Layers,
-  Sparkles
+  Sparkles,
+  CheckCircle2,
+  ArrowDownToLine
 } from "lucide-react";
 import { Track } from "../types";
 import { Visualizer } from "./Visualizer";
@@ -77,10 +79,53 @@ export const TrackList: React.FC<TrackListProps> = ({
 }) => {
   const [filterText, setFilterText] = useState("");
   const [removedNotification, setRemovedNotification] = useState<string | null>(null);
+  const [downloadingTrackId, setDownloadingTrackId] = useState<number | null>(null);
+  const [downloadedTrackIds, setDownloadedTrackIds] = useState<Set<number>>(new Set());
   const [selectedTrackIndexes, setSelectedTrackIndexes] = useState<Set<number>>(new Set());
   const [isSelectMode, setIsSelectMode] = useState(false);
 
   const handleOpenAdd = onOpenAddModal || onOpenAddTrackModal;
+
+  const handleDownloadSingleTrack = (e: React.MouseEvent, index: number, track: Track) => {
+    e.stopPropagation();
+    setDownloadingTrackId(index);
+
+    try {
+      let m3uContent = "#EXTM3U\n";
+      const durSec = track.duracao_ms ? Math.floor(track.duracao_ms / 1000) : -1;
+      m3uContent += `#EXTINF:${durSec},${track.nome_artista} - ${track.nome_musica}\n`;
+      if (track.videoId) {
+        m3uContent += `https://www.youtube.com/watch?v=${track.videoId}\n`;
+      } else {
+        m3uContent += `https://open.spotify.com/track/${track.spotify_id || ""}\n`;
+      }
+
+      const blob = new Blob([m3uContent], { type: "audio/x-mpegurl" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const cleanName = `${track.nome_artista}_${track.nome_musica}`.toLowerCase().replace(/[^a-z0-9]/g, "_");
+      a.download = `${cleanName}.m3u`;
+      a.click();
+      URL.revokeObjectURL(url);
+
+      setTimeout(() => {
+        setDownloadingTrackId(null);
+        setDownloadedTrackIds((prev) => new Set(prev).add(index));
+        setRemovedNotification(`Download de "${track.nome_musica}" iniciado!`);
+        setTimeout(() => {
+          setRemovedNotification(null);
+          setDownloadedTrackIds((prev) => {
+            const next = new Set(prev);
+            next.delete(index);
+            return next;
+          });
+        }, 3000);
+      }, 400);
+    } catch {
+      setDownloadingTrackId(null);
+    }
+  };
 
   const formatDuration = (ms?: number) => {
     if (!ms) return "--:--";
@@ -503,6 +548,36 @@ export const TrackList: React.FC<TrackListProps> = ({
                   <span className="text-[11px] font-mono text-zinc-400">
                     {formatDuration(track.duracao_ms)}
                   </span>
+
+                  {/* Download single track button with dynamic icon change */}
+                  <button
+                    id={`btn-download-track-${originalIndex}`}
+                    type="button"
+                    onClick={(e) => handleDownloadSingleTrack(e, originalIndex, track)}
+                    className={`p-1.5 rounded-lg transition-all ${
+                      downloadedTrackIds.has(originalIndex)
+                        ? "text-emerald-400 bg-emerald-950/60 ring-1 ring-emerald-500/50"
+                        : downloadingTrackId === originalIndex
+                        ? "text-emerald-400 bg-zinc-800"
+                        : "text-zinc-400 hover:text-emerald-300 hover:bg-zinc-800"
+                    }`}
+                    title={
+                      downloadedTrackIds.has(originalIndex)
+                        ? "Download concluído!"
+                        : downloadingTrackId === originalIndex
+                        ? "Baixando faixa..."
+                        : "Baixar esta música"
+                    }
+                    aria-label="Baixar esta música"
+                  >
+                    {downloadingTrackId === originalIndex ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : downloadedTrackIds.has(originalIndex) ? (
+                      <CheckCircle2 className="w-3.5 h-3.5 animate-bounce text-emerald-400" />
+                    ) : (
+                      <Download className="w-3.5 h-3.5" />
+                    )}
+                  </button>
 
                   {/* Delete track button */}
                   <button

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import { 
   X, 
   Download, 
@@ -11,7 +11,8 @@ import {
   Sparkles, 
   ArrowDownToLine,
   Apple,
-  Chrome
+  Chrome,
+  Loader2
 } from "lucide-react";
 import { Track } from "../types";
 
@@ -34,88 +35,101 @@ export const MobileDownloadModal: React.FC<MobileDownloadModalProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<"download" | "pwa">("download");
   const [downloadSuccess, setDownloadSuccess] = useState<string | null>(null);
+  const [downloadingFormat, setDownloadingFormat] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
   // Download .M3U format
   const handleDownloadM3U = () => {
-    let m3uContent = "#EXTM3U\n";
-    m3uContent += `#PLAYLIST:${playlistName}\n\n`;
+    setDownloadingFormat("m3u");
+    setTimeout(() => {
+      let m3uContent = "#EXTM3U\n";
+      m3uContent += `#PLAYLIST:${playlistName}\n\n`;
 
-    tracks.forEach((t) => {
-      const durSec = t.duracao_ms ? Math.floor(t.duracao_ms / 1000) : -1;
-      m3uContent += `#EXTINF:${durSec},${t.nome_artista} - ${t.nome_musica}\n`;
-      if (t.videoId) {
-        m3uContent += `https://www.youtube.com/watch?v=${t.videoId}\n\n`;
-      } else {
-        m3uContent += `https://open.spotify.com/track/${t.spotify_id || ""}\n\n`;
-      }
-    });
+      tracks.forEach((t) => {
+        const durSec = t.duracao_ms ? Math.floor(t.duracao_ms / 1000) : -1;
+        m3uContent += `#EXTINF:${durSec},${t.nome_artista} - ${t.nome_musica}\n`;
+        if (t.videoId) {
+          m3uContent += `https://www.youtube.com/watch?v=${t.videoId}\n\n`;
+        } else {
+          m3uContent += `https://open.spotify.com/track/${t.spotify_id || ""}\n\n`;
+        }
+      });
 
-    const blob = new Blob([m3uContent], { type: "audio/x-mpegurl" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${playlistName.toLowerCase().replace(/[^a-z0-9]/g, "_")}.m3u`;
-    a.click();
-    URL.revokeObjectURL(url);
+      const blob = new Blob([m3uContent], { type: "audio/x-mpegurl" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${playlistName.toLowerCase().replace(/[^a-z0-9]/g, "_")}.m3u`;
+      a.click();
+      URL.revokeObjectURL(url);
 
-    setDownloadSuccess("m3u");
-    setTimeout(() => setDownloadSuccess(null), 2500);
+      setDownloadingFormat(null);
+      setDownloadSuccess("m3u");
+      setTimeout(() => setDownloadSuccess(null), 3000);
+    }, 400);
   };
 
   // Download .JSON format
   const handleDownloadJSON = () => {
-    const data = {
-      app: "SpotTube",
-      playlist_name: playlistName,
-      total_faixas: tracks.length,
-      download_date: new Date().toISOString(),
-      faixas: tracks.map((t, idx) => ({
-        posicao: idx + 1,
-        musica: t.nome_musica,
-        artista: t.nome_artista,
-        album: t.album || "",
-        duracao_ms: t.duracao_ms || 0,
-        youtube_video_id: t.videoId || "",
-        capa_url: t.capa || "",
-      })),
-    };
+    setDownloadingFormat("json");
+    setTimeout(() => {
+      const data = {
+        app: "SpotTube",
+        playlist_name: playlistName,
+        total_faixas: tracks.length,
+        download_date: new Date().toISOString(),
+        faixas: tracks.map((t, idx) => ({
+          posicao: idx + 1,
+          musica: t.nome_musica,
+          artista: t.nome_artista,
+          album: t.album || "",
+          duracao_ms: t.duracao_ms || 0,
+          youtube_video_id: t.videoId || "",
+          capa_url: t.capa || "",
+        })),
+      };
 
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${playlistName.toLowerCase().replace(/[^a-z0-9]/g, "_")}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${playlistName.toLowerCase().replace(/[^a-z0-9]/g, "_")}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
 
-    setDownloadSuccess("json");
-    setTimeout(() => setDownloadSuccess(null), 2500);
+      setDownloadingFormat(null);
+      setDownloadSuccess("json");
+      setTimeout(() => setDownloadSuccess(null), 3000);
+    }, 400);
   };
 
   // Download .TXT tracklist
   const handleDownloadTXT = () => {
-    let txt = `SpotTube - Playlist: ${playlistName}\n`;
-    txt += `Total de Faixas: ${tracks.length}\n`;
-    txt += `Data: ${new Date().toLocaleDateString()}\n\n`;
-    txt += `===============================\n\n`;
+    setDownloadingFormat("txt");
+    setTimeout(() => {
+      let txt = `SpotTube - Playlist: ${playlistName}\n`;
+      txt += `Total de Faixas: ${tracks.length}\n`;
+      txt += `Data: ${new Date().toLocaleDateString()}\n\n`;
+      txt += `===============================\n\n`;
 
-    tracks.forEach((t, i) => {
-      txt += `${i + 1}. ${t.nome_musica} - ${t.nome_artista}\n`;
-      if (t.videoId) txt += `   YouTube: https://youtu.be/${t.videoId}\n`;
-    });
+      tracks.forEach((t, i) => {
+        txt += `${i + 1}. ${t.nome_musica} - ${t.nome_artista}\n`;
+        if (t.videoId) txt += `   YouTube: https://youtu.be/${t.videoId}\n`;
+      });
 
-    const blob = new Blob([txt], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${playlistName.toLowerCase().replace(/[^a-z0-9]/g, "_")}_faixas.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
+      const blob = new Blob([txt], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${playlistName.toLowerCase().replace(/[^a-z0-9]/g, "_")}_faixas.txt`;
+      a.click();
+      URL.revokeObjectURL(url);
 
-    setDownloadSuccess("txt");
-    setTimeout(() => setDownloadSuccess(null), 2500);
+      setDownloadingFormat(null);
+      setDownloadSuccess("txt");
+      setTimeout(() => setDownloadSuccess(null), 3000);
+    }, 400);
   };
 
   return (
@@ -204,9 +218,13 @@ export const MobileDownloadModal: React.FC<MobileDownloadModalProps> = ({
                     </p>
                   </div>
                 </div>
-                {downloadSuccess === "m3u" ? (
+                {downloadingFormat === "m3u" ? (
                   <span className="flex items-center gap-1 text-xs text-emerald-400 font-bold">
-                    <CheckCircle2 className="w-4 h-4" /> Baixado
+                    <Loader2 className="w-4 h-4 animate-spin" /> Baixando...
+                  </span>
+                ) : downloadSuccess === "m3u" ? (
+                  <span className="flex items-center gap-1 text-xs text-emerald-400 font-bold">
+                    <CheckCircle2 className="w-4 h-4 animate-bounce text-emerald-400" /> Baixado!
                   </span>
                 ) : (
                   <Download className="w-4 h-4 text-zinc-400 group-hover:text-white" />
@@ -232,9 +250,13 @@ export const MobileDownloadModal: React.FC<MobileDownloadModalProps> = ({
                     </p>
                   </div>
                 </div>
-                {downloadSuccess === "json" ? (
+                {downloadingFormat === "json" ? (
+                  <span className="flex items-center gap-1 text-xs text-blue-400 font-bold">
+                    <Loader2 className="w-4 h-4 animate-spin" /> Baixando...
+                  </span>
+                ) : downloadSuccess === "json" ? (
                   <span className="flex items-center gap-1 text-xs text-emerald-400 font-bold">
-                    <CheckCircle2 className="w-4 h-4" /> Baixado
+                    <CheckCircle2 className="w-4 h-4 animate-bounce text-emerald-400" /> Baixado!
                   </span>
                 ) : (
                   <Download className="w-4 h-4 text-zinc-400 group-hover:text-white" />
@@ -260,9 +282,13 @@ export const MobileDownloadModal: React.FC<MobileDownloadModalProps> = ({
                     </p>
                   </div>
                 </div>
-                {downloadSuccess === "txt" ? (
+                {downloadingFormat === "txt" ? (
+                  <span className="flex items-center gap-1 text-xs text-purple-400 font-bold">
+                    <Loader2 className="w-4 h-4 animate-spin" /> Baixando...
+                  </span>
+                ) : downloadSuccess === "txt" ? (
                   <span className="flex items-center gap-1 text-xs text-emerald-400 font-bold">
-                    <CheckCircle2 className="w-4 h-4" /> Baixado
+                    <CheckCircle2 className="w-4 h-4 animate-bounce text-emerald-400" /> Baixado!
                   </span>
                 ) : (
                   <Download className="w-4 h-4 text-zinc-400 group-hover:text-white" />
