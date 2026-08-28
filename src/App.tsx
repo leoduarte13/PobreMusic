@@ -465,6 +465,34 @@ export default function App() {
     setIsLoadingUserPlaylists(true);
     try {
       const token = localStorage.getItem("spotifyTokenManual") || localStorage.getItem("spotifyTokenManuaL");
+      
+      // 1. Direct Spotify API call if token is saved in client (for mobile APKs / standalone)
+      if (token) {
+        try {
+          const directRes = await fetch("https://api.spotify.com/v1/me/playlists?limit=50", {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (directRes.ok) {
+            const spData = await directRes.json();
+            const mapped = (spData.items || []).map((p: any) => ({
+              id: p.id,
+              name: p.name,
+              description: p.description || "",
+              total_tracks: p.tracks?.total || 0,
+              image_url: p.images?.[0]?.url || "",
+              is_public: p.public,
+              owner_name: p.owner?.display_name || "Você",
+            }));
+            setUserPlaylists(mapped);
+            setIsLoadingUserPlaylists(false);
+            return;
+          }
+        } catch (e) {
+          console.warn("Direct Spotify API fetch notice:", e);
+        }
+      }
+
+      // 2. Server API route
       const headers: Record<string, string> = {};
       if (token) {
         headers["Authorization"] = `Bearer ${token}`;
@@ -496,6 +524,32 @@ export default function App() {
   const checkAuthStatus = useCallback(async () => {
     try {
       const token = localStorage.getItem("spotifyTokenManual") || localStorage.getItem("spotifyTokenManuaL");
+      
+      // 1. If client token exists, verify directly with Spotify API
+      if (token) {
+        try {
+          const meDirect = await fetch("https://api.spotify.com/v1/me", {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (meDirect.ok) {
+            const meData = await meDirect.json();
+            const u: SpotifyUser = {
+              id: meData.id,
+              display_name: meData.display_name || "Usuário Spotify",
+              email: meData.email,
+              images: meData.images,
+              product: meData.product,
+            };
+            setSpotifyUser(u);
+            fetchUserPlaylists();
+            return;
+          }
+        } catch (e) {
+          console.warn("Direct me check notice:", e);
+        }
+      }
+
+      // 2. Server session check
       const headers: Record<string, string> = {};
       if (token) {
         headers["Authorization"] = `Bearer ${token}`;
@@ -992,7 +1046,7 @@ export default function App() {
             {playlistError && !needsAuthNotice && (
               <div 
                 id="alert-link-failure"
-                className="p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-red-950/80 via-zinc-900 to-zinc-950 border-2 border-red-500/80 text-red-200 text-xs sm:text-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-2xl animate-fade-in"
+                className="p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-red-950/90 via-zinc-900 to-zinc-950 border-2 border-red-500/80 text-red-200 text-xs sm:text-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-2xl animate-fade-in"
               >
                 <div className="flex items-start sm:items-center gap-3.5">
                   <div className="p-2.5 rounded-xl bg-red-500/20 border border-red-500/40 text-red-400 shrink-0 mt-0.5 sm:mt-0 shadow-sm">
@@ -1006,24 +1060,35 @@ export default function App() {
                       {playlistError}
                     </p>
                     <p className="text-[11px] text-zinc-400 mt-1">
-                      A lista de músicas e o player foram zerados. Cole um link válido do Spotify (ex: playlist pública ou álbum) ou escolha uma playlist em Destaques.
+                      💡 <strong>Dica:</strong> Se a playlist foi criada por você no Spotify, certifique-se de que ela está como <strong>Pública</strong> (no Spotify: toque nos 3 pontinhos &gt; "Tornar Pública") ou toque em <strong>Conectar Spotify</strong> para carregar qualquer playlist privada.
                     </p>
                   </div>
                 </div>
-                <div className="flex items-center gap-2 w-full sm:w-auto shrink-0 pt-2 sm:pt-0">
+                <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto shrink-0 pt-2 sm:pt-0">
+                  {!spotifyUser && (
+                    <button
+                      type="button"
+                      onClick={handleLoginSpotify}
+                      disabled={isLoggingIn}
+                      className="px-3.5 py-2 rounded-xl bg-[#1DB954] hover:bg-[#1ed760] text-zinc-950 font-bold text-xs flex items-center justify-center gap-1.5 shadow-md transition-all flex-1 sm:flex-none text-center"
+                    >
+                      <LogIn className="w-3.5 h-3.5 stroke-[2.5]" />
+                      <span>{isLoggingIn ? "Conectando..." : "Conectar Spotify"}</span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => loadPlaylist("top_hits")}
                     className="px-3.5 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold border border-zinc-700 transition-all flex-1 sm:flex-none text-center shadow-sm"
                   >
-                    Carregar Destaques
+                    Destaques
                   </button>
                   <button
                     type="button"
                     onClick={() => setIsConfigModalOpen(true)}
-                    className="px-3.5 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-xs shadow-md transition-all flex-1 sm:flex-none text-center"
+                    className="px-3 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-300 font-semibold text-xs border border-zinc-700 shadow-md transition-all flex-1 sm:flex-none text-center"
                   >
-                    Instruções
+                    Ajuda
                   </button>
                 </div>
               </div>

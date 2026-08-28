@@ -1,6 +1,50 @@
 import { PlaylistData, Track, TrackSearchResult } from "../types";
 import { PRESET_OPTIONS } from "../data/presetPlaylists";
 
+// Production fallback host (when app is exported as APK, Capacitor, Cordova, file://, or static host)
+const CLOUD_RUN_BACKEND_URL = "https://ais-pre-scpvhniuyqfisqru6bsquo-19904035643.us-west1.run.app";
+
+/**
+ * Returns candidate backend URLs to try in order of priority:
+ * 1. Custom URL set in localStorage
+ * 2. Current origin (relative /api if not file:// or capacitor://)
+ * 3. Hosted Cloud Run backend URL
+ */
+export function getCandidateBackendUrls(): string[] {
+  const list: string[] = [];
+
+  // 1. User defined custom backend URL if present
+  if (typeof localStorage !== "undefined") {
+    try {
+      const custom = localStorage.getItem("custom_backend_url");
+      if (custom && custom.startsWith("http")) {
+        list.push(custom.replace(/\/+$/, ""));
+      }
+    } catch {}
+  }
+
+  // 2. Relative endpoint for web browsers on same origin
+  if (typeof window !== "undefined" && window.location) {
+    const origin = window.location.origin;
+    const isLocalAppOrFile = 
+      !origin || 
+      origin === "null" || 
+      origin.startsWith("file:") || 
+      origin.startsWith("capacitor:") || 
+      origin.startsWith("ionic:");
+
+    if (!isLocalAppOrFile) {
+      list.push(""); // Empty string means relative path: "/api/..."
+    }
+  }
+
+  // 3. Hosted backend server fallback for mobile APKs / standalone apps
+  list.push(CLOUD_RUN_BACKEND_URL);
+
+  // Return unique list
+  return Array.from(new Set(list));
+}
+
 // Curated preset tracks mapping for instant offline / fallback loading
 const PRESET_FALLBACK_TRACKS: Record<string, PlaylistData> = {
   top_hits: {
@@ -102,7 +146,7 @@ export function extractYouTubeVideoId(input: string): string | null {
 }
 
 /**
- * Robust Client Music Search (Tries Server /api/search-tracks, then falls back to iTunes Search API)
+ * Robust Client Music Search (Tries Server /api/search-tracks on all available backend hosts, then falls back to iTunes Search API)
  */
 export async function searchMusicTracksClient(query: string): Promise<TrackSearchResult[]> {
   const trimmedQuery = query.trim();
@@ -124,18 +168,22 @@ export async function searchMusicTracksClient(query: string): Promise<TrackSearc
     ];
   }
 
-  // 1. Try Backend API
-  try {
-    const res = await fetch(`/api/search-tracks?q=${encodeURIComponent(trimmedQuery)}`);
-    const contentType = res.headers.get("content-type");
-    if (res.ok && contentType && contentType.includes("application/json")) {
-      const data = await res.json();
-      if (data && Array.isArray(data.tracks) && data.tracks.length > 0) {
-        return data.tracks;
+  // 1. Try Backend API on candidate hosts
+  const candidateHosts = getCandidateBackendUrls();
+  for (const host of candidateHosts) {
+    try {
+      const endpoint = `${host}/api/search-tracks?q=${encodeURIComponent(trimmedQuery)}`;
+      const res = await fetch(endpoint);
+      const contentType = res.headers.get("content-type");
+      if (res.ok && contentType && contentType.includes("application/json")) {
+        const data = await res.json();
+        if (data && Array.isArray(data.tracks) && data.tracks.length > 0) {
+          return data.tracks;
+        }
       }
+    } catch (err) {
+      // Try next host
     }
-  } catch (err) {
-    console.warn("Backend /api/search-tracks request notice:", err);
   }
 
   // 2. Client-side Fallback: Free, fast, open CORS iTunes Search API
@@ -189,22 +237,24 @@ export async function resolveYouTubeVideoIdClient(
 
   const query = `${nomeMusica} ${nomeArtista}`.trim();
 
-  // 1. Try Backend API
-  try {
-    const res = await fetch(
-      `/api/search?q=${encodeURIComponent(query)}&nome_musica=${encodeURIComponent(
+  // 1. Try Backend API on candidate hosts
+  const candidateHosts = getCandidateBackendUrls();
+  for (const host of candidateHosts) {
+    try {
+      const endpoint = `${host}/api/search?q=${encodeURIComponent(query)}&nome_musica=${encodeURIComponent(
         nomeMusica
-      )}&nome_artista=${encodeURIComponent(nomeArtista)}`
-    );
-    const contentType = res.headers.get("content-type");
-    if (res.ok && contentType && contentType.includes("application/json")) {
-      const data = await res.json();
-      if (data.videoId) {
-        return data.videoId;
+      )}&nome_artista=${encodeURIComponent(nomeArtista)}`;
+      const res = await fetch(endpoint);
+      const contentType = res.headers.get("content-type");
+      if (res.ok && contentType && contentType.includes("application/json")) {
+        const data = await res.json();
+        if (data.videoId) {
+          return data.videoId;
+        }
       }
+    } catch (err) {
+      // Try next host
     }
-  } catch (err) {
-    console.warn("Backend /api/search notice:", err);
   }
 
   // 2. Direct Public Video Search Fallback
@@ -283,58 +333,62 @@ export async function fetchPlaylistSafe(
     };
   }
 
-  // 4. Try Backend /api/spotify-playlist with 15s timeout
+  // 4. Try Backend /api/spotify-playlist on all candidate backend hosts
   const headers: Record<string, string> = {};
   const token = manualSpotifyToken || localStorage.getItem("spotifyTokenManual") || localStorage.getItem("spotifyTokenManuaL");
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
   }
 
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000);
+  const candidateHosts = getCandidateBackendUrls();
+  for (const host of candidateHosts) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 12000);
 
-    const res = await fetch(`/api/spotify-playlist?url=${encodeURIComponent(urlOrId)}`, {
-      headers,
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
+      const endpoint = `${host}/api/spotify-playlist?url=${encodeURIComponent(urlOrId)}`;
+      const res = await fetch(endpoint, {
+        headers,
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
 
-    const contentType = res.headers.get("content-type");
-    if (contentType && contentType.includes("application/json")) {
-      const data = await res.json();
-      if (res.ok && data) {
-        if (Array.isArray(data) && data.length > 0) {
-          const formattedFaixas: Track[] = data.map((t: any) => ({
-            nome_musica: t.title || t.nome_musica || t.name || "Sem título",
-            nome_artista: t.artist || t.nome_artista || (t.artists ? (Array.isArray(t.artists) ? t.artists.map((a: any) => a.name || a).join(", ") : t.artists) : "Desconhecido"),
-            album: t.album || cleanId,
-            duracao_ms: t.duration || t.duracao_ms || t.duration_ms || 200000,
-            capa: t.image || t.capa || t.thumbnail || "",
-            videoId: t.videoId,
-            spotify_id: t.spotify_id || t.id,
-          }));
-          return {
-            data: {
-              sucesso: true,
-              playlist_id: cleanId,
-              nome_playlist: "Playlist Spotify",
-              descricao: "Playlist sincronizada via link do Spotify.",
-              capa_playlist: formattedFaixas[0]?.capa || "",
-              total_faixas: formattedFaixas.length,
-              faixas: formattedFaixas,
-            },
-          };
-        } else if (data.sucesso && Array.isArray(data.faixas) && data.faixas.length > 0) {
-          return { data };
+      const contentType = res.headers.get("content-type");
+      if (contentType && contentType.includes("application/json")) {
+        const data = await res.json();
+        if (res.ok && data) {
+          if (Array.isArray(data) && data.length > 0) {
+            const formattedFaixas: Track[] = data.map((t: any) => ({
+              nome_musica: t.title || t.nome_musica || t.name || "Sem título",
+              nome_artista: t.artist || t.nome_artista || (t.artists ? (Array.isArray(t.artists) ? t.artists.map((a: any) => a.name || a).join(", ") : t.artists) : "Desconhecido"),
+              album: t.album || cleanId,
+              duracao_ms: t.duration || t.duracao_ms || t.duration_ms || 200000,
+              capa: t.image || t.capa || t.thumbnail || "",
+              videoId: t.videoId,
+              spotify_id: t.spotify_id || t.id,
+            }));
+            return {
+              data: {
+                sucesso: true,
+                playlist_id: cleanId,
+                nome_playlist: "Playlist Spotify",
+                descricao: "Playlist sincronizada via link do Spotify.",
+                capa_playlist: formattedFaixas[0]?.capa || "",
+                total_faixas: formattedFaixas.length,
+                faixas: formattedFaixas,
+              },
+            };
+          } else if (data.sucesso && Array.isArray(data.faixas) && data.faixas.length > 0) {
+            return { data };
+          }
+        }
+        if (data && (data.needsAuth || res.status === 401 || res.status === 403)) {
+          return { data, needsAuth: true };
         }
       }
-      if (data && (data.needsAuth || res.status === 401 || res.status === 403)) {
-        return { data, needsAuth: true };
-      }
+    } catch (err) {
+      console.warn(`Backend host ${host || "relative"} request notice, checking next:`, err);
     }
-  } catch (err) {
-    console.warn("Backend /api/spotify-playlist request notice (continuing with client resolution):", err);
   }
 
   // 5. Client-side Direct Spotify Web API (if user has token in browser)
