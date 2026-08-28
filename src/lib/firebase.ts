@@ -161,43 +161,6 @@ export function formatAuthErrorMessage(error: any): { title: string; message: st
   };
 }
 
-/**
- * Direct Profile Login (100% resilient fallback for instant sync and cloud Firestore access)
- */
-export async function loginWithDirectGoogleProfile(params: {
-  email: string;
-  displayName: string;
-  photoURL?: string;
-}): Promise<GoogleUserProfile> {
-  const uid = await ensureAuthUser();
-  const profile: GoogleUserProfile = {
-    uid,
-    displayName: params.displayName || "Usuário",
-    email: params.email || null,
-    photoURL: params.photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(params.displayName || uid)}`,
-  };
-
-  // Save to LocalStorage
-  try {
-    localStorage.setItem("spottube_google_user_profile", JSON.stringify(profile));
-  } catch {}
-
-  // Save/Update in Firestore
-  try {
-    const userRef = doc(db, "users", uid);
-    await setDoc(userRef, {
-      id: uid,
-      email: profile.email || "",
-      displayName: profile.displayName || "",
-      photoURL: profile.photoURL || "",
-      lastLogin: Date.now(),
-    }, { merge: true });
-  } catch (err) {
-    console.warn("[Firebase] Profile document sync warning:", err);
-  }
-
-  return profile;
-}
 
 /**
  * Handle initial redirect result (especially for mobile browsers)

@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { X, AlertTriangle, Copy, Check, ShieldCheck, Globe, UserCheck, Sparkles, LogIn } from "lucide-react";
+import { X, AlertTriangle, Copy, Check, ShieldCheck, Globe, RefreshCw } from "lucide-react";
 
 interface GoogleAuthErrorModalProps {
   isOpen: boolean;
@@ -11,7 +11,6 @@ interface GoogleAuthErrorModalProps {
     currentDomain: string;
   } | null;
   onRetry: () => void;
-  onDirectLogin?: (profile: { email: string; displayName: string }) => void;
 }
 
 export const GoogleAuthErrorModal: React.FC<GoogleAuthErrorModalProps> = ({
@@ -19,12 +18,8 @@ export const GoogleAuthErrorModal: React.FC<GoogleAuthErrorModalProps> = ({
   onClose,
   errorInfo,
   onRetry,
-  onDirectLogin,
 }) => {
   const [copied, setCopied] = useState(false);
-  const [customName, setCustomName] = useState("Leo Duarte");
-  const [customEmail, setCustomEmail] = useState("leoduarte13@gmail.com");
-  const [showCustomForm, setShowCustomForm] = useState(false);
 
   if (!isOpen || !errorInfo) return null;
 
@@ -36,19 +31,9 @@ export const GoogleAuthErrorModal: React.FC<GoogleAuthErrorModalProps> = ({
     }
   };
 
-  const handleQuickConnect = () => {
-    if (onDirectLogin) {
-      onDirectLogin({
-        displayName: customName.trim() || "Leo Duarte",
-        email: customEmail.trim() || "leoduarte13@gmail.com",
-      });
-      onClose();
-    }
-  };
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-      <div className="relative w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl p-6 text-zinc-100 animate-in fade-in zoom-in-95 duration-200 max-h-[90vh] overflow-y-auto">
+      <div className="relative w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl p-6 text-zinc-100 animate-in fade-in zoom-in-95 duration-200">
         {/* Header */}
         <div className="flex items-start justify-between pb-3 border-b border-zinc-800">
           <div className="flex items-center gap-3">
@@ -70,75 +55,12 @@ export const GoogleAuthErrorModal: React.FC<GoogleAuthErrorModalProps> = ({
 
         {/* Content */}
         <div className="py-4 space-y-4 text-xs">
-          {/* Quick Direct Profile Login Card (Bypasses Domain Lock) */}
-          <div className="p-3.5 bg-gradient-to-br from-emerald-950/40 to-zinc-950 rounded-xl border border-emerald-500/30 space-y-2.5">
-            <div className="flex items-center justify-between">
-              <span className="font-bold text-white flex items-center gap-1.5 text-xs">
-                <Sparkles className="w-4 h-4 text-emerald-400" />
-                Conexão Direta (Sem Bloqueio de Domínio)
-              </span>
-              <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-semibold border border-emerald-500/30">
-                Recomendado
-              </span>
-            </div>
-
-            <p className="text-zinc-300 text-[11px] leading-relaxed">
-              Ative a sincronização em nuvem e salve suas playlists diretamente no Firestore sem depender de autorização de domínio do Google.
-            </p>
-
-            {!showCustomForm ? (
-              <button
-                type="button"
-                onClick={handleQuickConnect}
-                className="w-full py-2.5 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold text-xs flex items-center justify-center gap-2 transition-all shadow-md shadow-emerald-500/20 active:scale-[0.98]"
-              >
-                <UserCheck className="w-4 h-4 stroke-[2.5]" />
-                <span>Entrar como Leo Duarte ({customEmail})</span>
-              </button>
-            ) : (
-              <div className="space-y-2 pt-1">
-                <div>
-                  <label className="text-[10px] text-zinc-400 font-medium">Nome de Exibição</label>
-                  <input
-                    type="text"
-                    value={customName}
-                    onChange={(e) => setCustomName(e.target.value)}
-                    className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg bg-zinc-900 border border-zinc-700 text-white text-xs focus:outline-none focus:border-emerald-500"
-                    placeholder="Seu nome"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] text-zinc-400 font-medium">Email da Conta</label>
-                  <input
-                    type="email"
-                    value={customEmail}
-                    onChange={(e) => setCustomEmail(e.target.value)}
-                    className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg bg-zinc-900 border border-zinc-700 text-white text-xs focus:outline-none focus:border-emerald-500"
-                    placeholder="seuemail@gmail.com"
-                  />
-                </div>
-                <button
-                  type="button"
-                  onClick={handleQuickConnect}
-                  className="w-full py-2 px-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold text-xs flex items-center justify-center gap-1.5 transition-all"
-                >
-                  <LogIn className="w-3.5 h-3.5" />
-                  <span>Conectar Perfil &amp; Ativar Nuvem</span>
-                </button>
-              </div>
-            )}
-
-            <button
-              type="button"
-              onClick={() => setShowCustomForm(!showCustomForm)}
-              className="text-[11px] text-emerald-400 hover:text-emerald-300 font-medium underline text-center w-full block pt-1"
-            >
-              {showCustomForm ? "Usar perfil padrão" : "Personalizar nome / outro email"}
-            </button>
-          </div>
-
           {errorInfo.isDomainError ? (
             <>
+              <p className="text-zinc-300 leading-relaxed">
+                Por segurança, o Google exige que este domínio esteja adicionado na lista de domínios autorizados do seu Firebase Authentication.
+              </p>
+
               <div className="p-3 bg-zinc-950 rounded-xl border border-zinc-800 space-y-1.5">
                 <div className="flex items-center justify-between text-[11px] text-zinc-400">
                   <span className="flex items-center gap-1.5 font-medium">
@@ -174,7 +96,7 @@ export const GoogleAuthErrorModal: React.FC<GoogleAuthErrorModalProps> = ({
               <div className="p-3 rounded-xl bg-zinc-950/60 border border-zinc-800/80 space-y-2">
                 <p className="font-bold text-zinc-200 flex items-center gap-1.5">
                   <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                  Como autorizar no Firebase Console (opcional para popup Google):
+                  Passo a passo no Firebase Console:
                 </p>
                 <ol className="list-decimal list-inside space-y-1 text-zinc-400 text-[11px] leading-relaxed">
                   <li>Acesse o <strong className="text-zinc-200">Firebase Console</strong></li>
@@ -205,13 +127,13 @@ export const GoogleAuthErrorModal: React.FC<GoogleAuthErrorModalProps> = ({
               onClose();
               onRetry();
             }}
-            className="px-4 py-2 text-xs font-bold text-zinc-200 bg-zinc-800 hover:bg-zinc-700 rounded-xl transition-colors border border-zinc-700"
+            className="px-4 py-2 text-xs font-bold text-zinc-950 bg-emerald-500 hover:bg-emerald-400 rounded-xl transition-colors flex items-center gap-1.5 shadow-lg shadow-emerald-500/20"
           >
-            Tentar Janela Google Novamente
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>Tentar Novamente</span>
           </button>
         </div>
       </div>
     </div>
   );
 };
-
