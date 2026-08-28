@@ -936,60 +936,9 @@ app.get("/api/config-status", (req, res) => {
   });
 });
 
-// API: Specific endpoint for reading playlist tracks directly (/api/playlist-tracks)
-app.get("/api/playlist-tracks", async (req, res) => {
-  const playlistId = (req.query.id || req.query.playlistId || "") as string;
-  const authHeader = req.headers.authorization;
-
-  let token = authHeader;
-  if (!token) {
-    const effective = await getEffectiveSpotifyToken(req);
-    if (effective.token) {
-      token = `Bearer ${effective.token}`;
-    }
-  }
-
-  if (!token) {
-    return res.status(401).json({ error: "Token ausente" });
-  }
-
-  if (!playlistId) {
-    return res.status(400).json({ error: "ID da playlist ausente" });
-  }
-
-  try {
-    // Endpoint específico do Spotify para ler o conteúdo de uma playlist
-    const cleanId = extractPlaylistId(playlistId);
-    const url = `https://api.spotify.com/v1/playlists/${cleanId}/tracks?limit=50`;
-
-    const spotifyReq = await fetch(url, {
-      headers: { Authorization: token },
-    });
-
-    const dados = await spotifyReq.json();
-
-    if (!spotifyReq.ok) {
-      const errorMsg = dados?.error?.message || (typeof dados?.error === "string" ? dados.error : "Erro ao buscar faixas no Spotify");
-      return res.status(spotifyReq.status).json({
-        error: errorMsg,
-        status: spotifyReq.status,
-        needsAuth: spotifyReq.status === 401,
-      });
-    }
-
-    console.log(`=== FAIXAS DA PLAYLIST (${cleanId}) ===`);
-    console.log(`Total de faixas obtidas: ${(dados.items || []).length}`);
-
-    // Retorna a array "items" (onde ficam as músicas) para o frontend
-    res.json(dados.items || []);
-  } catch (err: any) {
-    res.status(500).json({ error: "Erro ao buscar faixas da playlist", details: err.message });
-  }
-});
-
 // API: Get Spotify Playlist Tracks
-// Route: /api/playlist?id=... OR /api/playlist/:id OR POST /api/playlist
-app.all(["/api/playlist", "/api/playlist/:id"], async (req, res) => {
+// Supported Routes: /api/playlist-tracks, /api/playlist, /api/playlist/:id, /api/playlist-tracks/:id
+app.all(["/api/playlist-tracks", "/api/playlist-tracks/:id", "/api/playlist", "/api/playlist/:id"], async (req, res) => {
   try {
     let rawInput = (req.params.id || req.query.id || req.query.url || req.body?.id || req.body?.url || req.body?.playlistId || "") as string;
     rawInput = await resolvePossibleShortlink(rawInput);
@@ -999,7 +948,8 @@ app.all(["/api/playlist", "/api/playlist/:id"], async (req, res) => {
 
     if (!playlistId) {
       return res.status(400).json({ 
-        error: "ID ou URL da playlist do Spotify inválido.",
+        error: "ID da playlist não fornecido.",
+        sucesso: false,
         exemplo: "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M ou 37i9dQZF1DXcBWIGoYBM5M" 
       });
     }

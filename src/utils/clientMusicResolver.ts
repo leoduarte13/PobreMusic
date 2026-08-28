@@ -387,59 +387,23 @@ export async function fetchPlaylistSafe(
     }
   }
 
-  // 6. Client-side Spotify oEmbed + Smart Music Discovery
-  try {
-    let spotifyUrl = urlOrId.trim();
-    if (!spotifyUrl.startsWith("http")) {
-      spotifyUrl = `https://open.spotify.com/playlist/${cleanId}`;
-    }
-
-    const oembedRes = await fetch(
-      `https://open.spotify.com/oembed?url=${encodeURIComponent(spotifyUrl)}`
-    );
-
-    if (oembedRes.ok) {
-      const oembed = await oembedRes.json();
-      const playlistTitle = oembed.title || "Playlist Spotify";
-      const authorName = oembed.author_name || "";
-      const coverUrl = oembed.thumbnail_url || "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600&auto=format&fit=crop&q=80";
-
-      // Query music tracks based on the real playlist/album title
-      const searchQuery = authorName && !playlistTitle.includes(authorName) 
-        ? `${playlistTitle} ${authorName}` 
-        : playlistTitle;
-
-      const discoveredTracks = await searchMusicTracksClient(searchQuery);
-
-      if (discoveredTracks && discoveredTracks.length > 0) {
-        const faixas: Track[] = discoveredTracks.slice(0, 20).map((t) => ({
-          nome_musica: t.nome_musica,
-          nome_artista: t.nome_artista,
-          album: t.album || playlistTitle,
-          duracao_ms: t.duracao_ms || 200000,
-          capa: t.capa || coverUrl,
-          videoId: t.videoId,
-          spotify_id: t.spotify_id,
-        }));
-
-        return {
-          data: {
-            sucesso: true,
-            playlist_id: cleanId,
-            nome_playlist: playlistTitle,
-            descricao: `Playlist sincronizada via Spotify Embed (${authorName || "Spotify"}).`,
-            capa_playlist: coverUrl,
-            total_faixas: faixas.length,
-            faixas,
-          },
-        };
-      }
-    }
-  } catch (e) {
-    console.warn("oEmbed smart discovery notice:", e);
+  // 6. If this was a Spotify link/URI/ID or any playlist URL and tracks could not be loaded, return clean error
+  const isLikelyResource = urlOrId.includes("spotify.com") || urlOrId.startsWith("spotify:") || urlOrId.startsWith("http") || (cleanId.length >= 10 && !urlOrId.includes(" "));
+  if (isLikelyResource) {
+    return {
+      data: {
+        sucesso: false,
+        playlist_id: cleanId,
+        nome_playlist: "Playlist não encontrada",
+        descricao: "Não foi possível carregar as músicas deste link. Verifique se a playlist é pública ou conecte sua conta Spotify para playlists privadas.",
+        capa_playlist: "",
+        total_faixas: 0,
+        faixas: [],
+      },
+    };
   }
 
-  // 7. If user typed a search term or playlist name
+  // 7. If user entered a plain text search query (e.g. "rock 80s")
   if (cleanId && cleanId.length > 2) {
     try {
       const directSearchTracks = await searchMusicTracksClient(urlOrId.trim());
@@ -459,7 +423,7 @@ export async function fetchPlaylistSafe(
             sucesso: true,
             playlist_id: cleanId,
             nome_playlist: urlOrId.trim().replace(/^https?:\/\/[^\/]+\//, ""),
-            descricao: "Músicas localizadas via busca inteligente.",
+            descricao: "Músicas localizadas via busca.",
             capa_playlist: faixas[0]?.capa || "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600&auto=format&fit=crop&q=80",
             total_faixas: faixas.length,
             faixas,
@@ -467,33 +431,20 @@ export async function fetchPlaylistSafe(
         };
       }
     } catch (searchErr) {
-      console.warn("Direct search fallback error:", searchErr);
+      console.warn("Search notice:", searchErr);
     }
   }
 
-  // 8. If this was a Spotify link/URI/ID and we could not extract tracks, return explicit failure
-  const isLikelySpotify = urlOrId.includes("spotify.com") || urlOrId.startsWith("spotify:") || (cleanId.length === 22 && !urlOrId.includes(" "));
-  if (isLikelySpotify) {
-    return {
-      data: {
-        sucesso: false,
-        playlist_id: cleanId,
-        nome_playlist: "Playlist não encontrada",
-        descricao: "Não foi possível carregar as músicas deste link. Verifique se a playlist é pública ou faça login no Spotify para playlists privadas.",
-        capa_playlist: "",
-        total_faixas: 0,
-        faixas: [],
-      },
-    };
-  }
-
-  // 9. Fallback only for general search terms
-  const defaultFallback = PRESET_FALLBACK_TRACKS["top_hits"];
+  // 8. Clean error if nothing could be resolved (no random songs)
   return {
     data: {
-      ...defaultFallback,
-      nome_playlist: `Resultados para "${urlOrId.trim()}"`,
-      descricao: "Músicas recomendadas com base na sua busca.",
+      sucesso: false,
+      playlist_id: cleanId,
+      nome_playlist: "Nenhuma música encontrada",
+      descricao: "Não foi possível encontrar músicas para o termo ou link informado.",
+      capa_playlist: "",
+      total_faixas: 0,
+      faixas: [],
     },
   };
 }
