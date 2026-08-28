@@ -105,7 +105,16 @@ export function parseSpotifyInput(input: string): { id: string; type: "playlist"
   // 1. Direct preset ID
   if (PRESET_FALLBACK_TRACKS[trimmed]) return { id: trimmed, type: "preset" };
 
-  // 2. URL format: supports /user/xxx/playlist/ID, /intl-pt/playlist/ID, /playlist/ID, /album/ID, /track/ID
+  // 2. Shortlinks like spotify.link/ID or spoti.fi/ID
+  const shortMatch = trimmed.match(/(?:spotify\.link|spoti\.fi)\/([a-zA-Z0-9]+)/i);
+  if (shortMatch && shortMatch[1]) {
+    return {
+      type: "playlist",
+      id: shortMatch[1],
+    };
+  }
+
+  // 3. URL format: supports /user/xxx/playlist/ID, /intl-pt/playlist/ID, /playlist/ID, /album/ID, /track/ID
   const urlMatch = trimmed.match(/(?:user\/[^\/]+\/)?(?:intl-[a-z-]+\/)?(playlist|album|track)\/([a-zA-Z0-9]{10,40})/i);
   if (urlMatch && urlMatch[1] && urlMatch[2]) {
     return {
@@ -114,7 +123,7 @@ export function parseSpotifyInput(input: string): { id: string; type: "playlist"
     };
   }
 
-  // 3. URI format: spotify:(playlist|album|track):ID
+  // 4. URI format: spotify:(playlist|album|track):ID
   const uriMatch = trimmed.match(/spotify:(playlist|album|track):([a-zA-Z0-9]+)/i);
   if (uriMatch && uriMatch[1] && uriMatch[2]) {
     return {
@@ -123,8 +132,8 @@ export function parseSpotifyInput(input: string): { id: string; type: "playlist"
     };
   }
 
-  // 4. Raw Clean ID
-  const cleanId = trimmed.split("?")[0].replace(/[^a-zA-Z0-9]/g, "");
+  // 5. Raw Clean ID or URL tail
+  const cleanId = trimmed.split("?")[0].split("/").pop()?.replace(/[^a-zA-Z0-9]/g, "") || trimmed.replace(/[^a-zA-Z0-9]/g, "");
   return { id: cleanId, type: "raw" };
 }
 

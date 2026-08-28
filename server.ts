@@ -4,14 +4,15 @@ import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
 import session from "express-session";
 import cookieParser from "cookie-parser";
-import { createRequire } from "module";
+// @ts-ignore
+import * as spotifyUrlInfoPkg from "spotify-url-info";
 
 dotenv.config();
 
-// Initialize spotify-url-info with global fetch
-const require = createRequire(import.meta.url);
-const spotifyUrlInfo = require("spotify-url-info");
-const spotifyScraper = spotifyUrlInfo(globalThis.fetch || fetch);
+// Initialize spotify-url-info with global fetch (works in both ESM and CJS bundled builds)
+const spotifyUrlInfo: any = (spotifyUrlInfoPkg as any).default || spotifyUrlInfoPkg;
+const fetchFn = typeof globalThis.fetch === "function" ? globalThis.fetch : fetch;
+const spotifyScraper: any = typeof spotifyUrlInfo === "function" ? spotifyUrlInfo(fetchFn) : null;
 
 // Augment Express Session data
 declare module "express-session" {
@@ -261,7 +262,16 @@ function parseSpotifyResource(input: string): { id: string; type: "playlist" | "
     }
   }
 
-  // 3. Handles all Spotify URL variations:
+  // 3. Handles shortlinks like spotify.link/ID or spoti.fi/ID
+  const shortMatch = trimmed.match(/(?:spotify\.link|spoti\.fi)\/([a-zA-Z0-9]+)/i);
+  if (shortMatch && shortMatch[1]) {
+    return {
+      type: "playlist",
+      id: shortMatch[1],
+    };
+  }
+
+  // 4. Handles all Spotify URL variations:
   // - https://open.spotify.com/playlist/ID
   // - https://open.spotify.com/intl-pt/playlist/ID
   // - https://open.spotify.com/user/USER_ID/playlist/ID
@@ -275,7 +285,7 @@ function parseSpotifyResource(input: string): { id: string; type: "playlist" | "
     };
   }
 
-  // 4. Handles URIs like: spotify:(playlist|album|track):ID
+  // 5. Handles URIs like: spotify:(playlist|album|track):ID
   const uriMatch = trimmed.match(/spotify:(playlist|album|track):([a-zA-Z0-9]+)/i);
   if (uriMatch && uriMatch[1] && uriMatch[2]) {
     return {
@@ -284,8 +294,8 @@ function parseSpotifyResource(input: string): { id: string; type: "playlist" | "
     };
   }
 
-  // 5. Handles raw Spotify alphanumeric ID (e.g. 37i9dQZF1DXcBWIGoYBM5M)
-  const cleanId = trimmed.split("?")[0].replace(/[^a-zA-Z0-9]/g, "");
+  // 6. Handles raw Spotify alphanumeric ID (e.g. 5CPspRiq2g23hagXIqQ5S1 or 37i9dQZF1DXcBWIGoYBM5M)
+  const cleanId = trimmed.split("?")[0].split("/").pop()?.replace(/[^a-zA-Z0-9]/g, "") || trimmed.replace(/[^a-zA-Z0-9]/g, "");
   return { id: cleanId, type: "playlist" };
 }
 
