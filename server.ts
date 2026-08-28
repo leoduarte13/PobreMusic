@@ -8,10 +8,10 @@ import { createRequire } from "module";
 
 dotenv.config();
 
-// Initialize spotify-url-info with native fetch
+// Initialize spotify-url-info with global fetch
 const require = createRequire(import.meta.url);
 const spotifyUrlInfo = require("spotify-url-info");
-const spotifyScraper = spotifyUrlInfo(fetch);
+const spotifyScraper = spotifyUrlInfo(globalThis.fetch || fetch);
 
 // Augment Express Session data
 declare module "express-session" {
