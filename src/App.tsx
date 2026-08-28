@@ -562,6 +562,10 @@ export default function App() {
     setNeedsAuthNotice(false);
 
     try {
+      if (!urlOrId || !urlOrId.trim()) {
+        throw new Error("Por favor, informe o link ou ID da playlist do Spotify.");
+      }
+
       const token = localStorage.getItem("spotifyTokenManual") || localStorage.getItem("spotifyTokenManuaL");
       const { data, needsAuth } = await fetchPlaylistSafe(urlOrId, token);
 
@@ -570,7 +574,8 @@ export default function App() {
       }
 
       if (!data || !data.sucesso || !data.faixas || data.faixas.length === 0) {
-        throw new Error("Não foi possível carregar as faixas desta playlist. Verifique se o link está correto ou conecte sua conta Spotify.");
+        const errorDetail = data?.descricao || data?.error || "Não foi possível obter as faixas deste link. Verifique se a playlist é pública ou faça login com o Spotify para acessar playlists privadas.";
+        throw new Error(errorDetail);
       }
 
       setPlaylistData(data);
@@ -582,8 +587,27 @@ export default function App() {
       }
     } catch (err: any) {
       console.error("Error loading playlist:", err);
-      const displayMsg = typeof err === "string" ? err : err?.message || "Erro ao conectar com a API do Spotify";
-      setPlaylistError(displayMsg);
+
+      // Limpar a lista atual e zerar dados para evitar confusão visual
+      setPlaylistData(null);
+      setTracks([]);
+      setCurrentTrackIndex(null);
+
+      // Zerar o player completamente até que um link válido seja processado
+      if (ytPlayerRef.current) {
+        try {
+          ytPlayerRef.current.pause();
+          ytPlayerRef.current.seekTo(0);
+        } catch (e) {
+          // ignore
+        }
+      }
+      setPlaybackStatus("paused");
+      setCurrentTime(0);
+      setDuration(0);
+
+      const rawMsg = typeof err === "string" ? err : err?.message || "Não foi possível processar o link informado.";
+      setPlaylistError(rawMsg);
     } finally {
       setIsLoadingPlaylist(false);
     }
@@ -964,19 +988,44 @@ export default function App() {
               </div>
             )}
 
-            {/* Error Alert */}
+            {/* Visual Error Alert: Falha ao ler o link */}
             {playlistError && !needsAuthNotice && (
-              <div className="p-4 rounded-2xl bg-red-950/40 border border-red-800/60 text-red-300 text-sm flex items-center justify-between gap-3 shadow-lg">
-                <div className="flex items-center gap-2.5">
-                  <AlertCircle className="w-5 h-5 text-red-400 shrink-0" />
-                  <span>{playlistError}</span>
+              <div 
+                id="alert-link-failure"
+                className="p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-red-950/80 via-zinc-900 to-zinc-950 border-2 border-red-500/80 text-red-200 text-xs sm:text-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-2xl animate-fade-in"
+              >
+                <div className="flex items-start sm:items-center gap-3.5">
+                  <div className="p-2.5 rounded-xl bg-red-500/20 border border-red-500/40 text-red-400 shrink-0 mt-0.5 sm:mt-0 shadow-sm">
+                    <AlertCircle className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-sm sm:text-base text-white flex items-center gap-2">
+                      Falha ao ler o link
+                    </h3>
+                    <p className="text-xs text-red-200/90 mt-0.5 leading-relaxed">
+                      {playlistError}
+                    </p>
+                    <p className="text-[11px] text-zinc-400 mt-1">
+                      A lista de músicas e o player foram zerados. Cole um link válido do Spotify (ex: playlist pública ou álbum) ou escolha uma playlist em Destaques.
+                    </p>
+                  </div>
                 </div>
-                <button
-                  onClick={() => setIsConfigModalOpen(true)}
-                  className="text-xs underline font-semibold text-white hover:text-red-200 shrink-0"
-                >
-                  Ver Instruções
-                </button>
+                <div className="flex items-center gap-2 w-full sm:w-auto shrink-0 pt-2 sm:pt-0">
+                  <button
+                    type="button"
+                    onClick={() => loadPlaylist("top_hits")}
+                    className="px-3.5 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold border border-zinc-700 transition-all flex-1 sm:flex-none text-center shadow-sm"
+                  >
+                    Carregar Destaques
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsConfigModalOpen(true)}
+                    className="px-3.5 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-xs shadow-md transition-all flex-1 sm:flex-none text-center"
+                  >
+                    Instruções
+                  </button>
+                </div>
               </div>
             )}
 

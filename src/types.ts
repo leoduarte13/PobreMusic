@@ -41,6 +41,7 @@ export interface PlaylistData {
   aviso?: string;
   isPrivate?: boolean;
   autenticado?: boolean;
+  error?: string;
 }
 
 export interface YouTubeSearchResult {

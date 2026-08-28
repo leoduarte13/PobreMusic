@@ -402,16 +402,23 @@ export const TrackList: React.FC<TrackListProps> = ({
       {/* Tracks List */}
       <div className="divide-y divide-zinc-800/30">
         {filteredTracks.length === 0 ? (
-          <div className="p-8 text-center text-zinc-500 space-y-3">
-            <Music className="w-8 h-8 mx-auto opacity-50 text-emerald-400" />
-            <p className="text-xs font-medium">Nenhuma faixa encontrada na playlist.</p>
-            {onOpenAddModal && (
+          <div className="p-10 sm:p-14 text-center text-zinc-400 space-y-3">
+            <div className="w-12 h-12 rounded-2xl bg-zinc-800/80 border border-zinc-700/60 flex items-center justify-center mx-auto text-zinc-500 shadow-inner">
+              <Music className="w-6 h-6 text-emerald-400/80" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-zinc-200">Nenhuma faixa carregada</p>
+              <p className="text-xs text-zinc-500 mt-1 max-w-md mx-auto leading-relaxed">
+                A lista de reprodução e o player estão zerados. Cole um link válido do Spotify na barra acima ou adicione músicas manualmente.
+              </p>
+            </div>
+            {handleOpenAdd && (
               <button
                 type="button"
-                onClick={onOpenAddModal}
-                className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold text-xs inline-flex items-center gap-1.5 shadow-md transition-all"
+                onClick={handleOpenAdd}
+                className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold text-xs inline-flex items-center gap-1.5 shadow-md transition-all mt-2"
               >
-                <Plus className="w-3.5 h-3.5 stroke-[3]" />
+                <Plus className="w-4 h-4 stroke-[3]" />
                 <span>Buscar & Adicionar Músicas</span>
               </button>
             )}
