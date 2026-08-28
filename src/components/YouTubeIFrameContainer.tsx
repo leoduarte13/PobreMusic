@@ -17,6 +17,7 @@ export interface YouTubePlayerRef {
   getCurrentTime: () => number;
   getDuration: () => number;
   loadVideo: (videoId: string) => void;
+  cueVideo: (videoId: string) => void;
 }
 
 interface YouTubeIFrameContainerProps {
@@ -103,6 +104,15 @@ export const YouTubeIFrameContainer = forwardRef<YouTubePlayerRef, YouTubeIFrame
         console.warn("Error loading video by ID:", err);
       }
     },
+    cueVideo: (videoId: string) => {
+      try {
+        if (playerRef.current && typeof playerRef.current.cueVideoById === "function") {
+          playerRef.current.cueVideoById(videoId);
+        }
+      } catch (err) {
+        console.warn("Error cuing video by ID:", err);
+      }
+    },
   }));
 
   // Initialize YouTube IFrame API Script
@@ -113,7 +123,6 @@ export const YouTubeIFrameContainer = forwardRef<YouTubePlayerRef, YouTubeIFrame
       playerRef.current = new window.YT.Player(containerId.current, {
         height: "180",
         width: "320",
-        videoId: currentVideoId || "4NRXx6U8ABQ",
         playerVars: {
           autoplay: 0,
           controls: 0,
@@ -212,19 +221,6 @@ export const YouTubeIFrameContainer = forwardRef<YouTubePlayerRef, YouTubeIFrame
       } catch (e) {}
     }
   }, [volume, isPlayerReady]);
-
-  // Load new video when currentVideoId changes
-  useEffect(() => {
-    if (isPlayerReady && currentVideoId && playerRef.current) {
-      try {
-        if (typeof playerRef.current.loadVideoById === "function") {
-          playerRef.current.loadVideoById(currentVideoId);
-        }
-      } catch (e) {
-        console.warn("Could not load video ID into YouTube player:", e);
-      }
-    }
-  }, [currentVideoId, isPlayerReady]);
 
   return (
     <>

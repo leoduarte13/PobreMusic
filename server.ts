@@ -201,7 +201,31 @@ async function getEffectiveSpotifyToken(req: express.Request): Promise<{ token: 
   return { token: clientToken, isUserToken: false };
 }
 
-// Helper: Extract Spotify Resource ID & Type from ID or URL
+// Helper: Resolve shortlinks (e.g. spotify.link, spoti.fi)
+async function resolvePossibleShortlink(url: string): Promise<string> {
+  if (!url) return url;
+  const trimmed = url.trim();
+  if (trimmed.includes("spotify.link") || trimmed.includes("spoti.fi") || trimmed.includes("bit.ly")) {
+    try {
+      const res = await fetch(trimmed, {
+        method: "GET",
+        redirect: "follow",
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+      });
+      if (res.url && res.url !== trimmed) {
+        return res.url;
+      }
+    } catch (e) {
+      console.warn("Shortlink resolution error:", e);
+    }
+  }
+  return trimmed;
+}
+
+// Helper: Extract Spotify Resource ID & Type from any URL, URI or ID
 function parseSpotifyResource(input: string): { id: string; type: "playlist" | "album" | "track" | "preset" } {
   if (!input) return { id: "", type: "playlist" };
   const trimmed = input.trim();
@@ -219,8 +243,13 @@ function parseSpotifyResource(input: string): { id: string; type: "playlist" | "
     }
   }
 
-  // 3. Handles URLs like: https://open.spotify.com/(intl-xx/)?(playlist|album|track)/37i9dQZF1DXcBWIGoYBM5M?si=...
-  const urlMatch = trimmed.match(/(?:intl-[a-z]{2}\/)?(playlist|album|track)\/([a-zA-Z0-9]+)/i);
+  // 3. Handles all Spotify URL variations:
+  // - https://open.spotify.com/playlist/ID
+  // - https://open.spotify.com/intl-pt/playlist/ID
+  // - https://open.spotify.com/user/USER_ID/playlist/ID
+  // - https://open.spotify.com/album/ID
+  // - https://open.spotify.com/track/ID
+  const urlMatch = trimmed.match(/(?:user\/[^\/]+\/)?(?:intl-[a-z-]+\/)?(playlist|album|track)\/([a-zA-Z0-9]{10,40})/i);
   if (urlMatch && urlMatch[1] && urlMatch[2]) {
     return {
       type: urlMatch[1].toLowerCase() as "playlist" | "album" | "track",
@@ -228,7 +257,7 @@ function parseSpotifyResource(input: string): { id: string; type: "playlist" | "
     };
   }
 
-  // 4. Handles URIs like: spotify:(playlist|album|track):37i9dQZF1DXcBWIGoYBM5M
+  // 4. Handles URIs like: spotify:(playlist|album|track):ID
   const uriMatch = trimmed.match(/spotify:(playlist|album|track):([a-zA-Z0-9]+)/i);
   if (uriMatch && uriMatch[1] && uriMatch[2]) {
     return {
@@ -237,7 +266,7 @@ function parseSpotifyResource(input: string): { id: string; type: "playlist" | "
     };
   }
 
-  // 5. Handles raw Spotify ID (e.g. 37i9dQZF1DXcBWIGoYBM5M)
+  // 5. Handles raw Spotify alphanumeric ID (e.g. 37i9dQZF1DXcBWIGoYBM5M)
   const cleanId = trimmed.split("?")[0].replace(/[^a-zA-Z0-9]/g, "");
   return { id: cleanId, type: "playlist" };
 }
@@ -250,79 +279,94 @@ function extractPlaylistId(input: string): string {
  * Robust extraction of real tracks from Spotify Embed HTML (zero credentials required)
  */
 async function extractFromSpotifyEmbed(type: "playlist" | "album" | "track", id: string) {
-  try {
-    const embedUrl = `https://open.spotify.com/embed/${type}/${id}`;
-    const res = await fetch(embedUrl, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9,pt-BR;q=0.8",
-      },
-    });
+  // Types to attempt in order (if primary type returns nothing, try other types)
+  const typesToTry: ("playlist" | "album" | "track")[] = [type];
+  if (type !== "playlist") typesToTry.push("playlist");
+  if (type !== "album") typesToTry.push("album");
+  if (type !== "track") typesToTry.push("track");
 
-    if (!res.ok) {
-      console.warn(`[Spotify Embed] Returned status ${res.status} for ${embedUrl}`);
-      return null;
-    }
+  for (const currentType of typesToTry) {
+    try {
+      const embedUrl = `https://open.spotify.com/embed/${currentType}/${id}`;
+      const res = await fetch(embedUrl, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.9,pt-BR;q=0.8",
+        },
+      });
 
-    const html = await res.text();
-    const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">([^<]+)<\/script>/);
-    if (!match || !match[1]) return null;
-
-    const data = JSON.parse(match[1]);
-    const entity = data?.props?.pageProps?.state?.data?.entity;
-    if (!entity) return null;
-
-    const playlistName = entity.title || entity.name || (type === "album" ? "Álbum do Spotify" : "Playlist do Spotify");
-    const coverUrl = entity.coverArt?.sources?.[0]?.url || "";
-    const description = entity.subtitle ? `Por ${entity.subtitle}` : "Sincronizada via Spotify";
-
-    let rawList: any[] = [];
-    if (Array.isArray(entity.trackList) && entity.trackList.length > 0) {
-      rawList = entity.trackList;
-    } else if (entity.entityType === "track" || type === "track") {
-      rawList = [entity];
-    }
-
-    if (rawList.length === 0) return null;
-
-    const faixas = rawList.map((item: any) => {
-      const nomeMusica = item.title || item.name || "Sem título";
-      let nomeArtista = item.subtitle || "";
-      if (!nomeArtista && Array.isArray(item.artists)) {
-        nomeArtista = item.artists.map((a: any) => (typeof a === "string" ? a : a.name)).join(", ");
+      if (!res.ok) {
+        continue;
       }
-      if (!nomeArtista) nomeArtista = "Artista Desconhecido";
 
-      const duracaoMs = item.duration || item.duration_ms || 200000;
-      const album = type === "album" ? playlistName : (item.album?.name || playlistName);
-      const capa = item.coverArt?.sources?.[0]?.url || coverUrl;
-      const spotifyId = item.uri ? item.uri.replace("spotify:track:", "") : (item.id || "");
+      const html = await res.text();
+      const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">([^<]+)<\/script>/);
+      if (!match || !match[1]) continue;
 
-      return {
-        nome_musica: nomeMusica,
-        nome_artista: nomeArtista,
-        duracao_ms: duracaoMs,
-        album,
-        capa,
-        spotify_id: spotifyId,
-      };
-    });
+      const data = JSON.parse(match[1]);
+      const entity = data?.props?.pageProps?.state?.data?.entity || data?.props?.pageProps?.entity;
+      if (!entity) continue;
 
-    return {
-      sucesso: true,
-      playlist_id: id,
-      nome_playlist: playlistName,
-      descricao: description,
-      capa_playlist: coverUrl,
-      total_faixas: faixas.length,
-      faixas,
-      modo: "spotify_embed_extractor",
-    };
-  } catch (err) {
-    console.warn("[Spotify Embed] Error extracting tracks:", err);
-    return null;
+      const playlistName = entity.title || entity.name || (currentType === "album" ? "Álbum do Spotify" : "Playlist do Spotify");
+      const coverUrl = entity.coverArt?.sources?.[0]?.url || entity.images?.[0]?.url || "";
+      const description = entity.subtitle ? `Por ${entity.subtitle}` : "Sincronizada via Spotify";
+
+      let rawList: any[] = [];
+      if (Array.isArray(entity.trackList) && entity.trackList.length > 0) {
+        rawList = entity.trackList;
+      } else if (Array.isArray(entity.tracks?.items) && entity.tracks.items.length > 0) {
+        rawList = entity.tracks.items;
+      } else if (entity.entityType === "track" || currentType === "track") {
+        rawList = [entity];
+      }
+
+      if (rawList.length === 0) continue;
+
+      const faixas = rawList.map((item: any) => {
+        const tr = item.track || item;
+        const nomeMusica = tr.title || tr.name || "Sem título";
+        let nomeArtista = tr.subtitle || "";
+        if (!nomeArtista && Array.isArray(tr.artists)) {
+          nomeArtista = tr.artists.map((a: any) => (typeof a === "string" ? a : (a.name || ""))).filter(Boolean).join(", ");
+        }
+        if (!nomeArtista && tr.artist) {
+          nomeArtista = typeof tr.artist === "string" ? tr.artist : tr.artist.name || "";
+        }
+        if (!nomeArtista) nomeArtista = "Artista Desconhecido";
+
+        const duracaoMs = tr.duration || tr.duration_ms || tr.maxDuration || 200000;
+        const album = currentType === "album" ? playlistName : (tr.album?.name || playlistName);
+        const capa = tr.coverArt?.sources?.[0]?.url || tr.album?.images?.[0]?.url || coverUrl;
+        const spotifyId = tr.uri ? tr.uri.replace("spotify:track:", "") : (tr.id || "");
+
+        return {
+          nome_musica: nomeMusica,
+          nome_artista: nomeArtista,
+          duracao_ms: duracaoMs,
+          album,
+          capa,
+          spotify_id: spotifyId,
+        };
+      }).filter((f) => f.nome_musica && f.nome_musica !== "Sem título");
+
+      if (faixas.length > 0) {
+        return {
+          sucesso: true,
+          playlist_id: id,
+          nome_playlist: playlistName,
+          descricao: description,
+          capa_playlist: coverUrl || faixas[0]?.capa || "",
+          total_faixas: faixas.length,
+          faixas,
+          modo: "spotify_embed_extractor",
+        };
+      }
+    } catch (err) {
+      console.warn(`[Spotify Embed] Error attempting ${currentType}/${id}:`, err);
+    }
   }
+  return null;
 }
 
 // Preset demo playlist fallback when credentials are not configured or for quick testing
@@ -947,7 +991,8 @@ app.get("/api/playlist-tracks", async (req, res) => {
 // Route: /api/playlist?id=... OR /api/playlist/:id OR POST /api/playlist
 app.all(["/api/playlist", "/api/playlist/:id"], async (req, res) => {
   try {
-    const rawInput = (req.params.id || req.query.id || req.query.url || req.body?.id || req.body?.url || req.body?.playlistId || "") as string;
+    let rawInput = (req.params.id || req.query.id || req.query.url || req.body?.id || req.body?.url || req.body?.playlistId || "") as string;
+    rawInput = await resolvePossibleShortlink(rawInput);
     const parsedResource = parseSpotifyResource(rawInput);
     const playlistId = parsedResource.id;
     const resourceType = parsedResource.type === "preset" ? "playlist" : parsedResource.type;

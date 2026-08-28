@@ -61,8 +61,8 @@ export function parseSpotifyInput(input: string): { id: string; type: "playlist"
   // 1. Direct preset ID
   if (PRESET_FALLBACK_TRACKS[trimmed]) return { id: trimmed, type: "preset" };
 
-  // 2. URL format: https://open.spotify.com/(intl-xx/)?(playlist|album|track)/ID?si=...
-  const urlMatch = trimmed.match(/(?:intl-[a-z]{2}\/)?(playlist|album|track)\/([a-zA-Z0-9]+)/i);
+  // 2. URL format: supports /user/xxx/playlist/ID, /intl-pt/playlist/ID, /playlist/ID, /album/ID, /track/ID
+  const urlMatch = trimmed.match(/(?:user\/[^\/]+\/)?(?:intl-[a-z-]+\/)?(playlist|album|track)\/([a-zA-Z0-9]{10,40})/i);
   if (urlMatch && urlMatch[1] && urlMatch[2]) {
     return {
       type: urlMatch[1].toLowerCase() as "playlist" | "album" | "track",
@@ -283,7 +283,7 @@ export async function fetchPlaylistSafe(
     };
   }
 
-  // 4. Try Backend /api/playlist with 6s timeout
+  // 4. Try Backend /api/playlist with 15s timeout
   const headers: Record<string, string> = {};
   const token = manualSpotifyToken || localStorage.getItem("spotifyTokenManual") || localStorage.getItem("spotifyTokenManuaL");
   if (token) {
@@ -292,7 +292,7 @@ export async function fetchPlaylistSafe(
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 6000);
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
 
     const res = await fetch(`/api/playlist?id=${encodeURIComponent(urlOrId)}`, {
       headers,
