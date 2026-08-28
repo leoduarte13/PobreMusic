@@ -12,7 +12,7 @@ const PRESET_FALLBACK_TRACKS: Record<string, PlaylistData> = {
     total_faixas: 7,
     faixas: [
       { nome_musica: "Blinding Lights", nome_artista: "The Weeknd", duracao_ms: 200000, album: "After Hours", capa: "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=300&auto=format&fit=crop&q=80", videoId: "4NRXx6U8ABQ" },
-      { nome_musica: "As It Was", nome_artista: "Harry Styles", duracao_ms: 167000, album: "Harry's House", capa: "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&auto=format&fit=crop&q=80", videoId: "H5v3kku4y6Q" },
+      { nome_musica: "As It Was", nome_artista: "Harry Styles", duracao_ms: 167000, album: "Harry's House", capa: "https://images.unsplash.com/photo-1518837695005-2083093ee35b?w=300&auto=format&fit=crop&q=80", videoId: "H5v3kku4y6Q" },
       { nome_musica: "Flowers", nome_artista: "Miley Cyrus", duracao_ms: 200000, album: "Endless Summer Vacation", capa: "https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=300&auto=format&fit=crop&q=80", videoId: "G7KNmW9a75Y" },
       { nome_musica: "Shape of You", nome_artista: "Ed Sheeran", duracao_ms: 233000, album: "÷ (Divide)", capa: "https://images.unsplash.com/photo-1511735111819-9a3f7709049c?w=300&auto=format&fit=crop&q=80", videoId: "JGwWNGJdvx8" },
       { nome_musica: "Stay", nome_artista: "The Kid LAROI, Justin Bieber", duracao_ms: 141000, album: "F*CK LOVE 3", capa: "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=300&auto=format&fit=crop&q=80", videoId: "kTJczUoc568" },
@@ -28,7 +28,7 @@ const PRESET_FALLBACK_TRACKS: Record<string, PlaylistData> = {
     capa_playlist: "https://images.unsplash.com/photo-1518837695005-2083093ee35b?w=600&auto=format&fit=crop&q=80",
     total_faixas: 5,
     faixas: [
-      { nome_musica: "Garota de Ipanema", nome_artista: "Tom Jobim, Vinicius de Moraes", duracao_ms: 194000, album: "Antologia Bossa Nova", capa: "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&auto=format&fit=crop&q=80", videoId: "Wuy0dYnJk_w" },
+      { nome_musica: "Garota de Ipanema", nome_artista: "Tom Jobim, Vinicius de Moraes", duracao_ms: 194000, album: "Antologia Bossa Nova", capa: "https://images.unsplash.com/photo-1518837695005-2083093ee35b?w=300&auto=format&fit=crop&q=80", videoId: "Wuy0dYnJk_w" },
       { nome_musica: "Anunciação", nome_artista: "Alceu Valença", duracao_ms: 280000, album: "Anjo Avesso", capa: "https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=300&auto=format&fit=crop&q=80", videoId: "7qJ4n3g6_m8" },
       { nome_musica: "Pais e Filhos", nome_artista: "Legião Urbana", duracao_ms: 308000, album: "As Quatro Estações", capa: "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=300&auto=format&fit=crop&q=80", videoId: "tV1y5P2o3pA" },
       { nome_musica: "Ainda Bem", nome_artista: "Vanessa da Mata", duracao_ms: 220000, album: "Bicicletas, Bolos e Outras Alegrias", capa: "https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?w=300&auto=format&fit=crop&q=80", videoId: "3e5u1f7w4xQ" },
@@ -44,7 +44,7 @@ const PRESET_FALLBACK_TRACKS: Record<string, PlaylistData> = {
     total_faixas: 4,
     faixas: [
       { nome_musica: "Lofi Hip Hop Chill Beat", nome_artista: "Lofi Girl", duracao_ms: 180000, album: "Chillhop Essentials", capa: "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=300&auto=format&fit=crop&q=80", videoId: "jfKfPfyJRdk" },
-      { nome_musica: "Midnight Coffee", nome_artista: "Kupla", duracao_ms: 160000, album: "Nocturne", capa: "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&auto=format&fit=crop&q=80", videoId: "5yx6BWlEVcY" },
+      { nome_musica: "Midnight Coffee", nome_artista: "Kupla", duracao_ms: 160000, album: "Nocturne", capa: "https://images.unsplash.com/photo-1539375665275-f9de415ef9ac?w=300&auto=format&fit=crop&q=80", videoId: "5yx6BWlEVcY" },
       { nome_musica: "Rainy Afternoon Study", nome_artista: "Idealism", duracao_ms: 150000, album: "Rainy Days", capa: "https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=300&auto=format&fit=crop&q=80", videoId: "DWcJFNfaw9c" },
       { nome_musica: "Warm Breeze", nome_artista: "Saib", duracao_ms: 175000, album: "Bebop Lofi", capa: "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=300&auto=format&fit=crop&q=80", videoId: "2atqX58NeVc" }
     ]
@@ -154,7 +154,7 @@ export async function searchMusicTracksClient(query: string): Promise<TrackSearc
           duracao_ms: item.trackTimeMillis || 200000,
           capa: item.artworkUrl100
             ? item.artworkUrl100.replace("100x100bb", "600x600bb")
-            : "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&auto=format&fit=crop&q=80",
+            : "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=300&auto=format&fit=crop&q=80",
           previewUrl: item.previewUrl,
           origem: "itunes_search",
         }));
@@ -171,7 +171,7 @@ export async function searchMusicTracksClient(query: string): Promise<TrackSearc
       nome_artista: "Buscar no YouTube",
       album: "Single",
       duracao_ms: 200000,
-      capa: "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&auto=format&fit=crop&q=80",
+      capa: "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=300&auto=format&fit=crop&q=80",
       origem: "smart_search",
     },
   ];
@@ -449,7 +449,7 @@ export async function fetchPlaylistSafe(
           nome_artista: t.nome_artista,
           album: t.album || "Busca",
           duracao_ms: t.duracao_ms || 200000,
-          capa: t.capa || "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&auto=format&fit=crop&q=80",
+          capa: t.capa || "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=300&auto=format&fit=crop&q=80",
           videoId: t.videoId,
           spotify_id: t.spotify_id,
         }));

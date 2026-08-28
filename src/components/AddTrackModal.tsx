@@ -77,7 +77,7 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
       nome_artista: item.nome_artista,
       duracao_ms: item.duracao_ms || 200000,
       album: item.album || "Single",
-      capa: item.capa || "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&auto=format&fit=crop&q=80",
+      capa: item.capa || "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=300&auto=format&fit=crop&q=80",
       spotify_id: item.spotify_id,
       videoId: item.videoId,
     };
@@ -106,7 +106,7 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
       nome_artista: item.nome_artista,
       duracao_ms: item.duracao_ms || 200000,
       album: item.album || "Single",
-      capa: item.capa || "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&auto=format&fit=crop&q=80",
+      capa: item.capa || "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=300&auto=format&fit=crop&q=80",
       spotify_id: item.spotify_id,
       videoId: item.videoId,
     }));
@@ -138,7 +138,7 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
       nome_musica: customTitle.trim(),
       nome_artista: customArtist.trim(),
       album: customAlbum.trim() || "Single",
-      capa: customCover.trim() || "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&auto=format&fit=crop&q=80",
+      capa: customCover.trim() || "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=300&auto=format&fit=crop&q=80",
       duracao_ms: 210000,
       videoId: videoId,
     };
