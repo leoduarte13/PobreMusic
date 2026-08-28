@@ -15,6 +15,8 @@ import {
 import {
   getAuth,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   GoogleAuthProvider,
   signOut,
   onAuthStateChanged,
@@ -95,9 +97,82 @@ export async function testFirestoreConnection(): Promise<void> {
 testFirestoreConnection();
 
 /**
- * Sign in with Google Popup
+ * Format and decode Firebase Auth errors into clear, actionable messages
  */
-export async function signInWithGoogle(): Promise<GoogleUserProfile> {
+export function formatAuthErrorMessage(error: any): { title: string; message: string; isDomainError: boolean; currentDomain: string } {
+  const currentDomain = typeof window !== "undefined" ? window.location.hostname : "";
+  const errorCode = error?.code || "";
+  const errorMessage = error?.message || String(error);
+
+  if (errorCode === "auth/unauthorized-domain") {
+    return {
+      title: "Domínio não autorizado no Firebase",
+      message: `O domínio atual (${currentDomain}) precisa ser adicionado na lista de Domínios Autorizados no Firebase Console para permitir o login com Google.\n\nComo resolver no Firebase Console:\n1. Acesse o Firebase Console do seu projeto.\n2. Vá em Authentication > Configurações (Settings) > Domínios Autorizados.\n3. Clique em 'Adicionar Domínio' e insira: ${currentDomain}`,
+      isDomainError: true,
+      currentDomain,
+    };
+  }
+
+  if (errorCode === "auth/popup-blocked") {
+    return {
+      title: "Janela pop-up bloqueada",
+      message: "O navegador do seu celular ou computador bloqueou a abertura da janela do Google. Toque em 'Entrar com Google' novamente para tentar redirecionamento direto ou permita popups.",
+      isDomainError: false,
+      currentDomain,
+    };
+  }
+
+  if (errorCode === "auth/popup-closed-by-user" || errorCode === "auth/cancelled-popup-request") {
+    return {
+      title: "Login cancelado",
+      message: "A janela de login do Google foi fechada antes de concluir.",
+      isDomainError: false,
+      currentDomain,
+    };
+  }
+
+  return {
+    title: "Erro ao conectar com Google",
+    message: errorMessage || "Não foi possível completar a autenticação no momento.",
+    isDomainError: false,
+    currentDomain,
+  };
+}
+
+/**
+ * Handle initial redirect result (especially for mobile browsers)
+ */
+export async function checkRedirectAuthResult(): Promise<GoogleUserProfile | null> {
+  try {
+    const result = await getRedirectResult(auth);
+    if (result && result.user) {
+      const user = result.user;
+      const userRef = doc(db, "users", user.uid);
+      await setDoc(userRef, {
+        id: user.uid,
+        email: user.email || "",
+        displayName: user.displayName || "Usuário",
+        photoURL: user.photoURL || "",
+        lastLogin: Date.now(),
+      }, { merge: true });
+
+      return {
+        uid: user.uid,
+        displayName: user.displayName,
+        email: user.email,
+        photoURL: user.photoURL,
+      };
+    }
+  } catch (error: any) {
+    console.warn("[Firebase Auth] Redirect auth result notice:", error);
+  }
+  return null;
+}
+
+/**
+ * Sign in with Google Popup with fallback to Redirect on mobile/popup-block
+ */
+export async function signInWithGoogle(useRedirectFallback = true): Promise<GoogleUserProfile> {
   try {
     const result = await signInWithPopup(auth, googleProvider);
     const user = result.user;
@@ -119,7 +194,20 @@ export async function signInWithGoogle(): Promise<GoogleUserProfile> {
       photoURL: user.photoURL,
     };
   } catch (error: any) {
-    console.error("[Firebase Auth] Error signing in with Google:", error);
+    console.warn("[Firebase Auth] Error signing in with Google Popup:", error);
+    
+    // If popup was blocked on mobile or in restrictive browser, try redirect
+    if ((error?.code === "auth/popup-blocked" || error?.code === "auth/popup-closed-by-user") && useRedirectFallback) {
+      const isMobile = /Android|iPhone|iPad|iPod|Opera Mini|IEMobile/i.test(navigator.userAgent);
+      if (isMobile) {
+        try {
+          await signInWithRedirect(auth, googleProvider);
+          return new Promise(() => {}); // Execution will redirect away
+        } catch (redirectErr) {
+          console.error("[Firebase Auth] Redirect failed:", redirectErr);
+        }
+      }
+    }
     throw error;
   }
 }

@@ -124,12 +124,15 @@ export const MobileDownloadModal: React.FC<MobileDownloadModalProps> = ({
         {/* Header */}
         <div className="flex items-center justify-between pb-4 border-b border-zinc-800">
           <div className="flex items-center gap-3">
-            <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
-              <Smartphone className="w-5 h-5" />
+            <div className="w-10 h-10 rounded-xl overflow-hidden bg-zinc-950 border border-emerald-500/30 p-1 flex items-center justify-center shadow-lg shadow-emerald-500/10">
+              <img src="/pobremusic_icon.svg" alt="POBREMUSIC" className="w-full h-full object-contain" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white">Central de Download Mobile</h2>
-              <p className="text-xs text-zinc-400">Baixe playlists ou instale o SpotTube no seu celular</p>
+              <h2 className="text-lg font-bold text-white flex items-center gap-1.5">
+                <span>POBREMUSIC Mobile</span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-semibold">App</span>
+              </h2>
+              <p className="text-xs text-zinc-400">Baixe playlists ou instale o app no seu celular</p>
             </div>
           </div>
           <button

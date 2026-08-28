@@ -201,7 +201,7 @@ async function getEffectiveSpotifyToken(req: express.Request): Promise<{ token: 
   return { token: clientToken, isUserToken: false };
 }
 
-// Helper: Extract Spotify Playlist ID from ID or URL
+// Helper: Extract Spotify Resource ID & Type from ID or URL
 function extractPlaylistId(input: string): string {
   if (!input) return "";
   const trimmed = input.trim();
@@ -219,14 +219,14 @@ function extractPlaylistId(input: string): string {
     }
   }
 
-  // 3. Handles URLs like: https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M?si=...
-  const urlMatch = trimmed.match(/playlist\/([a-zA-Z0-9]+)/);
+  // 3. Handles URLs like: https://open.spotify.com/(intl-xx/)?(playlist|album|track)/37i9dQZF1DXcBWIGoYBM5M?si=...
+  const urlMatch = trimmed.match(/(?:intl-[a-z]{2}\/)?(?:playlist|album|track)\/([a-zA-Z0-9]+)/i);
   if (urlMatch && urlMatch[1]) {
     return urlMatch[1];
   }
 
-  // 4. Handles URIs like: spotify:playlist:37i9dQZF1DXcBWIGoYBM5M
-  const uriMatch = trimmed.match(/spotify:playlist:([a-zA-Z0-9]+)/);
+  // 4. Handles URIs like: spotify:(playlist|album|track):37i9dQZF1DXcBWIGoYBM5M
+  const uriMatch = trimmed.match(/spotify:(?:playlist|album|track):([a-zA-Z0-9]+)/i);
   if (uriMatch && uriMatch[1]) {
     return uriMatch[1];
   }

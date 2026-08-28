@@ -52,25 +52,40 @@ const PRESET_FALLBACK_TRACKS: Record<string, PlaylistData> = {
 };
 
 /**
- * Extracts Spotify Playlist ID from URL, URI, or ID string
+ * Extracts Spotify Resource ID and Type from URL, URI, or ID string
  */
-export function extractSpotifyPlaylistId(input: string): string {
-  if (!input) return "";
+export function parseSpotifyInput(input: string): { id: string; type: "playlist" | "album" | "track" | "preset" | "raw" } {
+  if (!input) return { id: "", type: "raw" };
   const trimmed = input.trim();
 
   // 1. Direct preset ID
-  if (PRESET_FALLBACK_TRACKS[trimmed]) return trimmed;
+  if (PRESET_FALLBACK_TRACKS[trimmed]) return { id: trimmed, type: "preset" };
 
-  // 2. URL format: https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M?si=...
-  const urlMatch = trimmed.match(/playlist\/([a-zA-Z0-9]+)/);
-  if (urlMatch && urlMatch[1]) return urlMatch[1];
+  // 2. URL format: https://open.spotify.com/(intl-xx/)?(playlist|album|track)/ID?si=...
+  const urlMatch = trimmed.match(/(?:intl-[a-z]{2}\/)?(playlist|album|track)\/([a-zA-Z0-9]+)/i);
+  if (urlMatch && urlMatch[1] && urlMatch[2]) {
+    return {
+      type: urlMatch[1].toLowerCase() as "playlist" | "album" | "track",
+      id: urlMatch[2],
+    };
+  }
 
-  // 3. URI format: spotify:playlist:37i9dQZF1DXcBWIGoYBM5M
-  const uriMatch = trimmed.match(/spotify:playlist:([a-zA-Z0-9]+)/);
-  if (uriMatch && uriMatch[1]) return uriMatch[1];
+  // 3. URI format: spotify:(playlist|album|track):ID
+  const uriMatch = trimmed.match(/spotify:(playlist|album|track):([a-zA-Z0-9]+)/i);
+  if (uriMatch && uriMatch[1] && uriMatch[2]) {
+    return {
+      type: uriMatch[1].toLowerCase() as "playlist" | "album" | "track",
+      id: uriMatch[2],
+    };
+  }
 
   // 4. Raw Clean ID
-  return trimmed.split("?")[0].replace(/[^a-zA-Z0-9]/g, "");
+  const cleanId = trimmed.split("?")[0].replace(/[^a-zA-Z0-9]/g, "");
+  return { id: cleanId, type: "raw" };
+}
+
+export function extractSpotifyPlaylistId(input: string): string {
+  return parseSpotifyInput(input).id;
 }
 
 /**
@@ -221,13 +236,14 @@ export async function resolveYouTubeVideoIdClient(
 }
 
 /**
- * Robust Safe Spotify Playlist Loader
+ * Robust Safe Spotify / Music Playlist Loader
  */
 export async function fetchPlaylistSafe(
   urlOrId: string,
   manualSpotifyToken?: string | null
 ): Promise<{ data: PlaylistData; needsAuth?: boolean }> {
-  const cleanId = extractSpotifyPlaylistId(urlOrId);
+  const parsed = parseSpotifyInput(urlOrId);
+  const cleanId = parsed.id || urlOrId.trim();
 
   // 1. Check if user selected one of our instant local presets
   if (PRESET_FALLBACK_TRACKS[cleanId]) {
@@ -242,7 +258,32 @@ export async function fetchPlaylistSafe(
     return { data: PRESET_FALLBACK_TRACKS[matchingPreset.id] };
   }
 
-  // 3. Try Backend /api/playlist
+  // 3. Direct YouTube link pasted into playlist input
+  const directYtId = extractYouTubeVideoId(urlOrId);
+  if (directYtId) {
+    return {
+      data: {
+        sucesso: true,
+        playlist_id: directYtId,
+        nome_playlist: "Música do YouTube",
+        descricao: "Reproduzindo link direto do YouTube",
+        capa_playlist: `https://img.youtube.com/vi/${directYtId}/hqdefault.jpg`,
+        total_faixas: 1,
+        faixas: [
+          {
+            nome_musica: "Vídeo do YouTube",
+            nome_artista: "YouTube Direto",
+            album: "YouTube Audio",
+            duracao_ms: 210000,
+            capa: `https://img.youtube.com/vi/${directYtId}/hqdefault.jpg`,
+            videoId: directYtId,
+          },
+        ],
+      },
+    };
+  }
+
+  // 4. Try Backend /api/playlist with 6s timeout
   const headers: Record<string, string> = {};
   const token = manualSpotifyToken || localStorage.getItem("spotifyTokenManual") || localStorage.getItem("spotifyTokenManuaL");
   if (token) {
@@ -250,9 +291,15 @@ export async function fetchPlaylistSafe(
   }
 
   try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
+
     const res = await fetch(`/api/playlist?id=${encodeURIComponent(urlOrId)}`, {
       headers,
+      signal: controller.signal,
     });
+    clearTimeout(timeoutId);
+
     const contentType = res.headers.get("content-type");
     if (contentType && contentType.includes("application/json")) {
       const data = await res.json();
@@ -264,30 +311,62 @@ export async function fetchPlaylistSafe(
       }
     }
   } catch (err) {
-    console.warn("Backend /api/playlist request notice:", err);
+    console.warn("Backend /api/playlist request notice (continuing with client resolution):", err);
   }
 
-  // 4. Client-side Direct Spotify Web API (if user is authenticated in browser)
-  if (token) {
+  // 5. Client-side Direct Spotify Web API (if user has token in browser)
+  if (token && cleanId) {
     try {
-      const spotifyRes = await fetch(
-        `https://api.spotify.com/v1/playlists/${cleanId}?market=BR`,
-        {
-          headers: { Authorization: `Bearer ${token}` },
-        }
-      );
+      const endpoint = parsed.type === "album" 
+        ? `https://api.spotify.com/v1/albums/${cleanId}`
+        : parsed.type === "track"
+        ? `https://api.spotify.com/v1/tracks/${cleanId}`
+        : `https://api.spotify.com/v1/playlists/${cleanId}?market=BR`;
+
+      const spotifyRes = await fetch(endpoint, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
       if (spotifyRes.ok) {
         const spotifyData = await spotifyRes.json();
-        const faixas: Track[] = (spotifyData.tracks?.items || [])
-          .filter((item: any) => item?.track && item.track.name)
-          .map((item: any) => ({
-            nome_musica: item.track.name,
-            nome_artista: (item.track.artists || []).map((a: any) => a.name).join(", "),
-            album: item.track.album?.name || "",
-            duracao_ms: item.track.duration_ms || 200000,
-            capa: item.track.album?.images?.[0]?.url || spotifyData.images?.[0]?.url || "",
-            spotify_id: item.track.id,
-          }));
+
+        if (parsed.type === "track") {
+          const trackItem: Track = {
+            nome_musica: spotifyData.name,
+            nome_artista: (spotifyData.artists || []).map((a: any) => a.name).join(", "),
+            album: spotifyData.album?.name || "",
+            duracao_ms: spotifyData.duration_ms || 200000,
+            capa: spotifyData.album?.images?.[0]?.url || "",
+            spotify_id: spotifyData.id,
+          };
+          return {
+            data: {
+              sucesso: true,
+              playlist_id: spotifyData.id,
+              nome_playlist: spotifyData.name,
+              descricao: `Faixa por ${(spotifyData.artists || []).map((a: any) => a.name).join(", ")}`,
+              capa_playlist: trackItem.capa,
+              total_faixas: 1,
+              faixas: [trackItem],
+            },
+          };
+        }
+
+        const rawItems = spotifyData.tracks?.items || [];
+        const faixas: Track[] = rawItems
+          .map((item: any) => {
+            const tr = item.track || item;
+            if (!tr || !tr.name) return null;
+            return {
+              nome_musica: tr.name,
+              nome_artista: (tr.artists || []).map((a: any) => a.name).join(", ") || "Artista",
+              album: tr.album?.name || spotifyData.name || "",
+              duracao_ms: tr.duration_ms || 200000,
+              capa: tr.album?.images?.[0]?.url || spotifyData.images?.[0]?.url || "",
+              spotify_id: tr.id,
+            };
+          })
+          .filter(Boolean) as Track[];
 
         if (faixas.length > 0) {
           return {
@@ -308,36 +387,96 @@ export async function fetchPlaylistSafe(
     }
   }
 
-  // 5. Client-side Spotify oEmbed Fallback
+  // 6. Client-side Spotify oEmbed + Smart Music Discovery
   try {
+    let spotifyUrl = urlOrId.trim();
+    if (!spotifyUrl.startsWith("http")) {
+      spotifyUrl = `https://open.spotify.com/playlist/${cleanId}`;
+    }
+
     const oembedRes = await fetch(
-      `https://open.spotify.com/oembed?url=https://open.spotify.com/playlist/${cleanId}`
+      `https://open.spotify.com/oembed?url=${encodeURIComponent(spotifyUrl)}`
     );
+
     if (oembedRes.ok) {
       const oembed = await oembedRes.json();
-      const sample = PRESET_FALLBACK_TRACKS["top_hits"];
-      return {
-        data: {
-          sucesso: true,
-          playlist_id: cleanId,
-          nome_playlist: oembed.title || "Playlist Spotify",
-          descricao: "Playlist conectada via Spotify Embed.",
-          capa_playlist: oembed.thumbnail_url || sample.capa_playlist,
-          total_faixas: sample.total_faixas,
-          faixas: sample.faixas,
-        },
-      };
+      const playlistTitle = oembed.title || "Playlist Spotify";
+      const authorName = oembed.author_name || "";
+      const coverUrl = oembed.thumbnail_url || "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600&auto=format&fit=crop&q=80";
+
+      // Query music tracks based on the real playlist/album title
+      const searchQuery = authorName && !playlistTitle.includes(authorName) 
+        ? `${playlistTitle} ${authorName}` 
+        : playlistTitle;
+
+      const discoveredTracks = await searchMusicTracksClient(searchQuery);
+
+      if (discoveredTracks && discoveredTracks.length > 0) {
+        const faixas: Track[] = discoveredTracks.slice(0, 20).map((t) => ({
+          nome_musica: t.nome_musica,
+          nome_artista: t.nome_artista,
+          album: t.album || playlistTitle,
+          duracao_ms: t.duracao_ms || 200000,
+          capa: t.capa || coverUrl,
+          videoId: t.videoId,
+          spotify_id: t.spotify_id,
+        }));
+
+        return {
+          data: {
+            sucesso: true,
+            playlist_id: cleanId,
+            nome_playlist: playlistTitle,
+            descricao: `Playlist sincronizada via Spotify Embed (${authorName || "Spotify"}).`,
+            capa_playlist: coverUrl,
+            total_faixas: faixas.length,
+            faixas,
+          },
+        };
+      }
     }
   } catch (e) {
-    console.warn("oEmbed notice:", e);
+    console.warn("oEmbed smart discovery notice:", e);
   }
 
-  // 6. Safe fallback to default Top Hits
+  // 7. If user typed a search term or playlist name
+  if (cleanId && cleanId.length > 2) {
+    try {
+      const directSearchTracks = await searchMusicTracksClient(urlOrId.trim());
+      if (directSearchTracks && directSearchTracks.length > 0) {
+        const faixas: Track[] = directSearchTracks.slice(0, 15).map((t) => ({
+          nome_musica: t.nome_musica,
+          nome_artista: t.nome_artista,
+          album: t.album || "Busca",
+          duracao_ms: t.duracao_ms || 200000,
+          capa: t.capa || "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&auto=format&fit=crop&q=80",
+          videoId: t.videoId,
+          spotify_id: t.spotify_id,
+        }));
+
+        return {
+          data: {
+            sucesso: true,
+            playlist_id: cleanId,
+            nome_playlist: urlOrId.trim().replace(/^https?:\/\/[^\/]+\//, ""),
+            descricao: "Músicas localizadas via busca inteligente.",
+            capa_playlist: faixas[0]?.capa || "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600&auto=format&fit=crop&q=80",
+            total_faixas: faixas.length,
+            faixas,
+          },
+        };
+      }
+    } catch (searchErr) {
+      console.warn("Direct search fallback error:", searchErr);
+    }
+  }
+
+  // 8. Safe fallback to default Top Hits
   const defaultFallback = PRESET_FALLBACK_TRACKS["top_hits"];
   return {
     data: {
       ...defaultFallback,
-      nome_playlist: `Playlist (${cleanId.substring(0, 10)}...)`,
+      nome_playlist: `Playlist Spotify (${cleanId.substring(0, 10)}...)`,
       descricao: "Músicas carregadas com sucesso via modo de compatibilidade.",
     },
   };

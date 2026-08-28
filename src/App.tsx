@@ -14,6 +14,7 @@ import { SpotifyNowPlayingView } from "./components/SpotifyNowPlayingView";
 import { SpotifyAuthModal } from "./components/SpotifyAuthModal";
 import { MobileDownloadModal } from "./components/MobileDownloadModal";
 import { MobileDownloadBanner } from "./components/MobileDownloadBanner";
+import { GoogleAuthErrorModal } from "./components/GoogleAuthErrorModal";
 import { 
   Track, 
   PlaylistData, 
@@ -29,6 +30,8 @@ import {
   signInWithGoogle,
   logoutGoogle,
   subscribeToAuth,
+  checkRedirectAuthResult,
+  formatAuthErrorMessage,
   saveUserPlaylistToCloud, 
   deleteUserPlaylistFromCloud, 
   subscribeToUserCloudPlaylists,
@@ -83,6 +86,12 @@ export default function App() {
   // Google Auth State
   const [googleUser, setGoogleUser] = useState<GoogleUserProfile | null>(null);
   const [isGoogleLoggingIn, setIsGoogleLoggingIn] = useState(false);
+  const [googleAuthError, setGoogleAuthError] = useState<{
+    title: string;
+    message: string;
+    isDomainError: boolean;
+    currentDomain: string;
+  } | null>(null);
 
   // Saved Playlists state
   const [savedPlaylists, setSavedPlaylists] = useState<SavedPlaylist[]>(() => {
@@ -95,8 +104,19 @@ export default function App() {
     return [];
   });
 
-  // Listen to Google Auth state
+  // Listen to Google Auth state and check redirect results on mobile mount
   useEffect(() => {
+    // Check if user just returned from a mobile redirect login
+    checkRedirectAuthResult()
+      .then((redirectUser) => {
+        if (redirectUser) {
+          setGoogleUser(redirectUser);
+        }
+      })
+      .catch((err) => {
+        console.warn("Google Redirect Auth notice:", err);
+      });
+
     const unsubscribe = subscribeToAuth((user) => {
       setGoogleUser(user);
     });
@@ -191,11 +211,18 @@ export default function App() {
   // Google Login / Logout Handlers
   const handleLoginGoogle = async () => {
     setIsGoogleLoggingIn(true);
+    setGoogleAuthError(null);
     try {
       const user = await signInWithGoogle();
       setGoogleUser(user);
     } catch (err: any) {
-      console.warn("Google login was cancelled or failed:", err);
+      console.warn("Google login notice:", err);
+      // Only show error modal if it wasn't a standard user cancellation
+      const errCode = err?.code || "";
+      if (errCode !== "auth/popup-closed-by-user" && errCode !== "auth/cancelled-popup-request") {
+        const formatted = formatAuthErrorMessage(err);
+        setGoogleAuthError(formatted);
+      }
     } finally {
       setIsGoogleLoggingIn(false);
     }
@@ -1125,6 +1152,14 @@ export default function App() {
         isOpen={isConfigModalOpen}
         onClose={() => setIsConfigModalOpen(false)}
         configStatus={configStatus}
+      />
+
+      {/* Google Auth Error Modal (Explains domain authorization, popup permissions, etc.) */}
+      <GoogleAuthErrorModal
+        isOpen={!!googleAuthError}
+        onClose={() => setGoogleAuthError(null)}
+        errorInfo={googleAuthError}
+        onRetry={handleLoginGoogle}
       />
     </div>
   );
