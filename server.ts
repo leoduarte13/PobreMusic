@@ -9,10 +9,21 @@ import * as spotifyUrlInfoPkg from "spotify-url-info";
 
 dotenv.config();
 
-// Initialize spotify-url-info with global fetch (works in both ESM and CJS bundled builds)
+// Initialize spotify-url-info with custom fetch with browser headers
 const spotifyUrlInfo: any = (spotifyUrlInfoPkg as any).default || spotifyUrlInfoPkg;
-const fetchFn = typeof globalThis.fetch === "function" ? globalThis.fetch : fetch;
-const spotifyScraper: any = typeof spotifyUrlInfo === "function" ? spotifyUrlInfo(fetchFn) : null;
+const customBrowserFetch = (url: string | any, options: any = {}) => {
+  const baseFetch = typeof globalThis.fetch === "function" ? globalThis.fetch : fetch;
+  return baseFetch(url, {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.9,pt-BR;q=0.8",
+    },
+  });
+};
+const spotifyScraper: any = typeof spotifyUrlInfo === "function" ? spotifyUrlInfo(customBrowserFetch) : null;
 
 // Augment Express Session data
 declare module "express-session" {
