@@ -16,6 +16,8 @@ import {
   getAuth,
   signInWithPopup,
   signInWithRedirect,
+  signInWithCredential,
+  signInAnonymously,
   getRedirectResult,
   GoogleAuthProvider,
   signOut,
@@ -24,6 +26,12 @@ import {
 } from "firebase/auth";
 import firebaseConfig from "../../firebase-applet-config.json";
 import { SavedPlaylist, GoogleUserProfile, EqualizerState } from "../types";
+
+declare global {
+  interface Window {
+    google?: any;
+  }
+}
 
 // Initialize Firebase App
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
@@ -84,6 +92,20 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(JSON.stringify(errInfo));
 }
 
+// Ensure auth session is ready for Firestore operations
+async function ensureAuthUser(): Promise<string> {
+  if (auth.currentUser?.uid) {
+    return auth.currentUser.uid;
+  }
+  try {
+    const cred = await signInAnonymously(auth);
+    return cred.user.uid;
+  } catch (e) {
+    console.warn("[Firebase Auth] Anonymous fallback warning:", e);
+    return "guest_user";
+  }
+}
+
 // Test Connection on init
 export async function testFirestoreConnection(): Promise<void> {
   try {
@@ -140,6 +162,124 @@ export function formatAuthErrorMessage(error: any): { title: string; message: st
 }
 
 /**
+ * Helper to dynamically load Google Identity Services if not already present
+ */
+function loadGoogleIdentityServices(): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof window === "undefined") return resolve();
+    if (window.google?.accounts?.oauth2) return resolve();
+
+    const existingScript = document.getElementById("gsi-client-script");
+    if (existingScript) {
+      existingScript.addEventListener("load", () => resolve());
+      setTimeout(resolve, 2000);
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.id = "gsi-client-script";
+    script.src = "https://accounts.google.com/gsi/client";
+    script.async = true;
+    script.defer = true;
+    script.onload = () => resolve();
+    script.onerror = () => resolve();
+    document.head.appendChild(script);
+    setTimeout(resolve, 2000);
+  });
+}
+
+/**
+ * Sign in using Google Identity Services (GIS) Token Client
+ * Runs directly on accounts.google.com and bypasses domain restrictions
+ */
+async function signInWithGISTokenClient(): Promise<GoogleUserProfile> {
+  await loadGoogleIdentityServices();
+
+  const clientId = firebaseConfig.oAuthClientId;
+  if (!clientId || !window.google?.accounts?.oauth2) {
+    throw new Error("Google Identity Services not available");
+  }
+
+  return new Promise((resolve, reject) => {
+    try {
+      const tokenClient = window.google.accounts.oauth2.initTokenClient({
+        client_id: clientId,
+        scope: "openid profile email",
+        callback: async (tokenResponse: any) => {
+          if (tokenResponse.error) {
+            console.warn("[GSI] Token response error:", tokenResponse);
+            return reject(new Error(tokenResponse.error_description || tokenResponse.error));
+          }
+
+          const accessToken = tokenResponse.access_token;
+          if (!accessToken) {
+            return reject(new Error("No access token returned from Google"));
+          }
+
+          try {
+            // Fetch profile directly from Google
+            const userInfoRes = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+              headers: { Authorization: `Bearer ${accessToken}` },
+            });
+            const userInfo = await userInfoRes.json();
+
+            // Link / Sign in to Firebase Auth using the credential
+            let fbUser: User | null = null;
+            try {
+              const credential = GoogleAuthProvider.credential(null, accessToken);
+              const result = await signInWithCredential(auth, credential);
+              fbUser = result.user;
+            } catch (fbErr) {
+              console.warn("[Firebase Auth] Credential link fallback:", fbErr);
+              // If credential exchange fails, ensure anonymous auth for Firestore
+              try {
+                const anonResult = await signInAnonymously(auth);
+                fbUser = anonResult.user;
+              } catch {}
+            }
+
+            const uid = fbUser?.uid || userInfo.sub || `google_${Date.now()}`;
+            const profile: GoogleUserProfile = {
+              uid,
+              displayName: userInfo.name || userInfo.given_name || "Usuário Google",
+              email: userInfo.email || null,
+              photoURL: userInfo.picture || null,
+            };
+
+            // Save to LocalStorage
+            try {
+              localStorage.setItem("spottube_google_user_profile", JSON.stringify(profile));
+            } catch {}
+
+            // Save in Firestore if available
+            try {
+              const userRef = doc(db, "users", uid);
+              await setDoc(userRef, {
+                id: uid,
+                email: profile.email || "",
+                displayName: profile.displayName || "",
+                photoURL: profile.photoURL || "",
+                lastLogin: Date.now(),
+              }, { merge: true });
+            } catch (dbErr) {
+              console.warn("[Firebase] Could not save user profile doc:", dbErr);
+            }
+
+            resolve(profile);
+          } catch (err) {
+            reject(err);
+          }
+        },
+      });
+
+      tokenClient.requestAccessToken({ prompt: "select_account" });
+    } catch (initErr) {
+      reject(initErr);
+    }
+  });
+}
+
+/**
  * Handle initial redirect result (especially for mobile browsers)
  */
 export async function checkRedirectAuthResult(): Promise<GoogleUserProfile | null> {
@@ -156,23 +296,58 @@ export async function checkRedirectAuthResult(): Promise<GoogleUserProfile | nul
         lastLogin: Date.now(),
       }, { merge: true });
 
-      return {
+      const profile: GoogleUserProfile = {
         uid: user.uid,
         displayName: user.displayName,
         email: user.email,
         photoURL: user.photoURL,
       };
+
+      try {
+        localStorage.setItem("spottube_google_user_profile", JSON.stringify(profile));
+      } catch {}
+
+      return profile;
     }
   } catch (error: any) {
     console.warn("[Firebase Auth] Redirect auth result notice:", error);
   }
+
+  // Check cached profile in localStorage
+  try {
+    const stored = localStorage.getItem("spottube_google_user_profile");
+    if (stored) {
+      const profile = JSON.parse(stored);
+      if (profile && profile.uid) {
+        // Ensure anonymous auth is active in background so Firestore rules pass
+        ensureAuthUser().catch(() => {});
+        return profile;
+      }
+    }
+  } catch {}
+
   return null;
 }
 
 /**
- * Sign in with Google Popup with fallback to Redirect on mobile/popup-block
+ * Sign in with Google (Multi-strategy: GIS OAuth -> Firebase Popup -> Firebase Redirect)
  */
 export async function signInWithGoogle(useRedirectFallback = true): Promise<GoogleUserProfile> {
+  // Strategy 1: Google Identity Services (Bypasses domain authorization issues)
+  try {
+    if (typeof window !== "undefined" && firebaseConfig.oAuthClientId) {
+      const profile = await signInWithGISTokenClient();
+      return profile;
+    }
+  } catch (gisErr: any) {
+    console.warn("[Google Auth] GSI token flow notice, trying Firebase popup:", gisErr);
+    // If user cancelled the popup, rethrow cancellation
+    if (gisErr?.message?.includes("closed") || gisErr?.message?.includes("cancel")) {
+      throw { code: "auth/popup-closed-by-user", message: "Login cancelado pelo usuário" };
+    }
+  }
+
+  // Strategy 2: Firebase Popup
   try {
     const result = await signInWithPopup(auth, googleProvider);
     const user = result.user;
@@ -187,12 +362,18 @@ export async function signInWithGoogle(useRedirectFallback = true): Promise<Goog
       lastLogin: Date.now(),
     }, { merge: true });
 
-    return {
+    const profile: GoogleUserProfile = {
       uid: user.uid,
       displayName: user.displayName,
       email: user.email,
       photoURL: user.photoURL,
     };
+
+    try {
+      localStorage.setItem("spottube_google_user_profile", JSON.stringify(profile));
+    } catch {}
+
+    return profile;
   } catch (error: any) {
     console.warn("[Firebase Auth] Error signing in with Google Popup:", error);
     
@@ -217,6 +398,9 @@ export async function signInWithGoogle(useRedirectFallback = true): Promise<Goog
  */
 export async function logoutGoogle(): Promise<void> {
   try {
+    localStorage.removeItem("spottube_google_user_profile");
+  } catch {}
+  try {
     await signOut(auth);
   } catch (error) {
     console.error("[Firebase Auth] Error signing out:", error);
@@ -228,16 +412,34 @@ export async function logoutGoogle(): Promise<void> {
  * Subscribe to Auth State Changes
  */
 export function subscribeToAuth(callback: (user: GoogleUserProfile | null) => void): () => void {
+  // First check if cached in localStorage
+  try {
+    const stored = localStorage.getItem("spottube_google_user_profile");
+    if (stored) {
+      const profile = JSON.parse(stored);
+      if (profile && profile.uid) {
+        callback(profile);
+      }
+    }
+  } catch {}
+
   return onAuthStateChanged(auth, (user: User | null) => {
-    if (user) {
-      callback({
+    if (user && !user.isAnonymous) {
+      const profile: GoogleUserProfile = {
         uid: user.uid,
         displayName: user.displayName,
         email: user.email,
         photoURL: user.photoURL,
-      });
-    } else {
-      callback(null);
+      };
+      try {
+        localStorage.setItem("spottube_google_user_profile", JSON.stringify(profile));
+      } catch {}
+      callback(profile);
+    } else if (!user) {
+      const stored = localStorage.getItem("spottube_google_user_profile");
+      if (!stored) {
+        callback(null);
+      }
     }
   });
 }
@@ -247,12 +449,14 @@ export function subscribeToAuth(callback: (user: GoogleUserProfile | null) => vo
  * /users/{userId}/playlists/{playlistId}
  */
 export async function saveUserPlaylistToCloud(userId: string, playlist: SavedPlaylist): Promise<void> {
-  const path = `users/${userId}/playlists/${playlist.id}`;
+  const actualUserId = auth.currentUser?.uid || userId;
+  const path = `users/${actualUserId}/playlists/${playlist.id}`;
   try {
-    const playlistRef = doc(db, "users", userId, "playlists", playlist.id);
+    await ensureAuthUser();
+    const playlistRef = doc(db, "users", actualUserId, "playlists", playlist.id);
     const payload = {
       id: playlist.id,
-      userId: userId,
+      userId: actualUserId,
       name: playlist.name.slice(0, 150),
       description: (playlist.description || "").slice(0, 500),
       cover: (playlist.cover || "").slice(0, 2000),
@@ -271,9 +475,11 @@ export async function saveUserPlaylistToCloud(userId: string, playlist: SavedPla
  * Delete a playlist from the user's private collection
  */
 export async function deleteUserPlaylistFromCloud(userId: string, playlistId: string): Promise<void> {
-  const path = `users/${userId}/playlists/${playlistId}`;
+  const actualUserId = auth.currentUser?.uid || userId;
+  const path = `users/${actualUserId}/playlists/${playlistId}`;
   try {
-    const playlistRef = doc(db, "users", userId, "playlists", playlistId);
+    await ensureAuthUser();
+    const playlistRef = doc(db, "users", actualUserId, "playlists", playlistId);
     await deleteDoc(playlistRef);
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
@@ -284,9 +490,11 @@ export async function deleteUserPlaylistFromCloud(userId: string, playlistId: st
  * Fetch all private playlists of a specific user
  */
 export async function fetchUserCloudPlaylists(userId: string): Promise<SavedPlaylist[]> {
-  const path = `users/${userId}/playlists`;
+  const actualUserId = auth.currentUser?.uid || userId;
+  const path = `users/${actualUserId}/playlists`;
   try {
-    const playlistsCol = collection(db, "users", userId, "playlists");
+    await ensureAuthUser();
+    const playlistsCol = collection(db, "users", actualUserId, "playlists");
     const q = query(playlistsCol, orderBy("updatedAt", "desc"));
     const snapshot = await getDocs(q);
     const playlists: SavedPlaylist[] = [];
@@ -294,7 +502,7 @@ export async function fetchUserCloudPlaylists(userId: string): Promise<SavedPlay
       const data = docSnap.data();
       playlists.push({
         id: data.id || docSnap.id,
-        userId: data.userId || userId,
+        userId: data.userId || actualUserId,
         name: data.name || "Playlist Sem Nome",
         description: data.description || "",
         cover: data.cover || "",
@@ -318,9 +526,10 @@ export function subscribeToUserCloudPlaylists(
   callback: (playlists: SavedPlaylist[]) => void,
   onError?: (error: Error) => void
 ): () => void {
-  const path = `users/${userId}/playlists`;
+  const actualUserId = auth.currentUser?.uid || userId;
+  const path = `users/${actualUserId}/playlists`;
   try {
-    const playlistsCol = collection(db, "users", userId, "playlists");
+    const playlistsCol = collection(db, "users", actualUserId, "playlists");
     const q = query(playlistsCol, orderBy("updatedAt", "desc"));
 
     const unsubscribe = onSnapshot(
@@ -331,7 +540,7 @@ export function subscribeToUserCloudPlaylists(
           const data = docSnap.data();
           playlists.push({
             id: data.id || docSnap.id,
-            userId: data.userId || userId,
+            userId: data.userId || actualUserId,
             name: data.name || "Playlist Sem Nome",
             description: data.description || "",
             cover: data.cover || "",
@@ -369,9 +578,11 @@ export async function saveUserSettingsToCloud(
     lastPlaylistId?: string;
   }
 ): Promise<void> {
-  const path = `users/${userId}`;
+  const actualUserId = auth.currentUser?.uid || userId;
+  const path = `users/${actualUserId}`;
   try {
-    const userDoc = doc(db, "users", userId);
+    await ensureAuthUser();
+    const userDoc = doc(db, "users", actualUserId);
     await setDoc(userDoc, { preferences: settings, updatedAt: Date.now() }, { merge: true });
   } catch (err) {
     console.warn("[Firebase] Error saving user settings to cloud:", err);
