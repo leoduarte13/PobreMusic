@@ -1158,7 +1158,41 @@ app.all(["/api/spotify-playlist", "/api/spotify-playlist/:id", "/api/playlist-tr
       console.warn("[spotify-url-info] Scraper notice:", scraperErr.message);
     }
 
-    // 4. If all fail, return explicit error rather than substituting random songs
+    // 4. Direct Spotify oEmbed fallback for tracks, albums, or playlists
+    try {
+      const canonicalSpotifyUrl = `https://open.spotify.com/${resourceType}/${playlistId}`;
+      const oembedRes = await fetch(`https://open.spotify.com/oembed?url=${encodeURIComponent(canonicalSpotifyUrl)}`);
+      if (oembedRes.ok) {
+        const oembedData = await oembedRes.json();
+        const oembedTitle = oembedData.title || "";
+        const oembedThumbnail = oembedData.thumbnail_url || "";
+
+        if (resourceType === "track" && oembedTitle) {
+          const trackItem = {
+            nome_musica: oembedTitle,
+            nome_artista: "Spotify",
+            album: "Single",
+            duracao_ms: 210000,
+            capa: oembedThumbnail,
+            spotify_id: playlistId,
+          };
+          return res.json({
+            sucesso: true,
+            playlist_id: playlistId,
+            nome_playlist: oembedTitle,
+            descricao: "Faixa obtida via Spotify",
+            capa_playlist: oembedThumbnail,
+            total_faixas: 1,
+            faixas: [trackItem],
+            modo: "spotify_oembed",
+          });
+        }
+      }
+    } catch (oembedErr: any) {
+      console.warn("[spotify-oembed] Notice:", oembedErr.message);
+    }
+
+    // 5. If all fail, return explicit error rather than substituting random songs
     return res.status(404).json({
       sucesso: false,
       error: "Não foi possível carregar as faixas deste link do Spotify. Verifique se o link está correto e se a playlist é pública, ou conecte sua conta do Spotify para playlists privadas.",

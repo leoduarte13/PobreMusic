@@ -1,14 +1,16 @@
 import { PlaylistData, Track, TrackSearchResult } from "../types";
 import { PRESET_OPTIONS } from "../data/presetPlaylists";
 
-// Production fallback host (when app is exported as APK, Capacitor, Cordova, file://, or static host)
+// Production fallback hosts (when app is exported as APK, Capacitor, Cordova, file://, or static host)
+const DEV_RUN_BACKEND_URL = "https://ais-dev-scpvhniuyqfisqru6bsquo-19904035643.us-west1.run.app";
 const CLOUD_RUN_BACKEND_URL = "https://ais-pre-scpvhniuyqfisqru6bsquo-19904035643.us-west1.run.app";
 
 /**
  * Returns candidate backend URLs to try in order of priority:
  * 1. Custom URL set in localStorage
  * 2. Current origin (relative /api if not file:// or capacitor://)
- * 3. Hosted Cloud Run backend URL
+ * 3. Active Live Development Backend URL
+ * 4. Hosted Cloud Run backend URL
  */
 export function getCandidateBackendUrls(): string[] {
   const list: string[] = [];
@@ -23,7 +25,7 @@ export function getCandidateBackendUrls(): string[] {
     } catch {}
   }
 
-  // 2. Relative endpoint for web browsers on same origin
+  // 2. Relative endpoint and current window origin for web browsers
   if (typeof window !== "undefined" && window.location) {
     const origin = window.location.origin;
     const isLocalAppOrFile = 
@@ -35,10 +37,16 @@ export function getCandidateBackendUrls(): string[] {
 
     if (!isLocalAppOrFile) {
       list.push(""); // Empty string means relative path: "/api/..."
+      if (origin.startsWith("http")) {
+        list.push(origin.replace(/\/+$/, ""));
+      }
     }
   }
 
-  // 3. Hosted backend server fallback for mobile APKs / standalone apps
+  // 3. Active Live Development backend server fallback
+  list.push(DEV_RUN_BACKEND_URL);
+
+  // 4. Hosted backend server fallback for mobile APKs / standalone apps
   list.push(CLOUD_RUN_BACKEND_URL);
 
   // Return unique list
@@ -473,7 +481,53 @@ export async function fetchPlaylistSafe(
     }
   }
 
-  // 6. If this was a Spotify link/URI/ID or any playlist URL and tracks could not be loaded, return clean error
+  // 6. Direct Client-Side Spotify oEmbed resolution (Public CORS endpoint)
+  if (urlOrId.includes("spotify.com") || urlOrId.startsWith("spotify:")) {
+    try {
+      const canonicalSpotifyUrl = urlOrId.startsWith("http")
+        ? urlOrId
+        : `https://open.spotify.com/${parsed.type}/${cleanId}`;
+
+      const oembedRes = await fetch(
+        `https://open.spotify.com/oembed?url=${encodeURIComponent(canonicalSpotifyUrl)}`
+      );
+
+      if (oembedRes.ok) {
+        const oembedData = await oembedRes.json();
+        const oembedTitle = oembedData.title || "";
+        const oembedThumbnail = oembedData.thumbnail_url || "";
+
+        // If it was a single track, search directly for its music audio
+        if (parsed.type === "track" && oembedTitle) {
+          const videoId = await resolveYouTubeVideoIdClient(oembedTitle, "Spotify");
+          const trackItem: Track = {
+            nome_musica: oembedTitle,
+            nome_artista: "Spotify",
+            album: "Single",
+            duracao_ms: 210000,
+            capa: oembedThumbnail,
+            videoId,
+            spotify_id: cleanId,
+          };
+          return {
+            data: {
+              sucesso: true,
+              playlist_id: cleanId,
+              nome_playlist: oembedTitle,
+              descricao: `Faixa obtida do Spotify`,
+              capa_playlist: oembedThumbnail,
+              total_faixas: 1,
+              faixas: [trackItem],
+            },
+          };
+        }
+      }
+    } catch (oembedErr) {
+      console.warn("Client oEmbed fallback notice:", oembedErr);
+    }
+  }
+
+  // 7. If this was a Spotify link/URI/ID or any playlist URL and tracks could not be loaded, return clean error
   const isLikelyResource = urlOrId.includes("spotify.com") || urlOrId.startsWith("spotify:") || urlOrId.startsWith("http") || (cleanId.length >= 10 && !urlOrId.includes(" "));
   if (isLikelyResource) {
     return {

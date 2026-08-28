@@ -42,6 +42,24 @@ export const YouTubeIFrameContainer = forwardRef<YouTubePlayerRef, YouTubeIFrame
   const [isPlayerReady, setIsPlayerReady] = useState(false);
   const [showVideoPreview, setShowVideoPreview] = useState(false);
   const timeUpdateInterval = useRef<any>(null);
+  const lastEndedTrackTime = useRef<number>(0);
+
+  // Keep fresh callback references across renders so YouTube event listeners never call stale closures
+  const callbacksRef = useRef({
+    onStatusChange,
+    onTimeUpdate,
+    onTrackEnded,
+    onError,
+  });
+
+  useEffect(() => {
+    callbacksRef.current = {
+      onStatusChange,
+      onTimeUpdate,
+      onTrackEnded,
+      onError,
+    };
+  });
 
   // Expose imperative player actions
   useImperativeHandle(ref, () => ({
@@ -98,7 +116,18 @@ export const YouTubeIFrameContainer = forwardRef<YouTubePlayerRef, YouTubeIFrame
     loadVideo: (videoId: string) => {
       try {
         if (playerRef.current && typeof playerRef.current.loadVideoById === "function") {
-          playerRef.current.loadVideoById(videoId);
+          playerRef.current.loadVideoById({
+            videoId,
+            startSeconds: 0,
+          });
+          // Ensure playback resumes immediately without pausing
+          setTimeout(() => {
+            try {
+              if (playerRef.current && typeof playerRef.current.playVideo === "function") {
+                playerRef.current.playVideo();
+              }
+            } catch {}
+          }, 50);
         }
       } catch (err) {
         console.warn("Error loading video by ID:", err);
@@ -115,6 +144,17 @@ export const YouTubeIFrameContainer = forwardRef<YouTubePlayerRef, YouTubeIFrame
     },
   }));
 
+  // Trigger track end with debounce
+  const triggerTrackEnded = () => {
+    const now = Date.now();
+    if (now - lastEndedTrackTime.current < 1200) {
+      return; // Prevent duplicate skip within 1.2s
+    }
+    lastEndedTrackTime.current = now;
+    callbacksRef.current.onStatusChange("ended");
+    callbacksRef.current.onTrackEnded();
+  };
+
   // Initialize YouTube IFrame API Script
   useEffect(() => {
     const initPlayer = () => {
@@ -124,7 +164,7 @@ export const YouTubeIFrameContainer = forwardRef<YouTubePlayerRef, YouTubeIFrame
         height: "180",
         width: "320",
         playerVars: {
-          autoplay: 0,
+          autoplay: 1,
           controls: 0,
           disablekb: 1,
           fs: 0,
@@ -132,6 +172,7 @@ export const YouTubeIFrameContainer = forwardRef<YouTubePlayerRef, YouTubeIFrame
           rel: 0,
           showinfo: 0,
           iv_load_policy: 3,
+          playsinline: 1,
           origin: window.location.origin,
         },
         events: {
@@ -147,28 +188,27 @@ export const YouTubeIFrameContainer = forwardRef<YouTubePlayerRef, YouTubeIFrame
             // YT.PlayerState: -1 (unstarted), 0 (ended), 1 (playing), 2 (paused), 3 (buffering), 5 (video cued)
             switch (event.data) {
               case 1:
-                onStatusChange("playing");
+                callbacksRef.current.onStatusChange("playing");
                 break;
               case 2:
-                onStatusChange("paused");
+                callbacksRef.current.onStatusChange("paused");
                 break;
               case 3:
-                onStatusChange("buffering");
+                callbacksRef.current.onStatusChange("buffering");
                 break;
               case 0:
-                onStatusChange("ended");
-                onTrackEnded();
+                triggerTrackEnded();
                 break;
               case 5:
-                onStatusChange("cued");
+                callbacksRef.current.onStatusChange("cued");
                 break;
               default:
-                onStatusChange("unstarted");
+                callbacksRef.current.onStatusChange("unstarted");
             }
           },
           onError: (event: any) => {
             console.error("YouTube Player Error Code:", event.data);
-            onError(event.data);
+            callbacksRef.current.onError(event.data);
           },
         },
       });

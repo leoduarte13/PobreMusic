@@ -175,6 +175,28 @@ export default function App() {
   const ytPlayerRef = useRef<YouTubePlayerRef>(null);
   const silentAudioRef = useRef<HTMLAudioElement | null>(null);
 
+  // Synchronized refs to guarantee zero-closure-staleness during automatic continuous playback
+  const tracksRef = useRef<Track[]>(tracks);
+  const currentTrackIndexRef = useRef<number | null>(currentTrackIndex);
+  const shuffleRef = useRef<boolean>(shuffle);
+  const repeatModeRef = useRef<"off" | "all" | "one">(repeatMode);
+
+  useEffect(() => {
+    tracksRef.current = tracks;
+  }, [tracks]);
+
+  useEffect(() => {
+    currentTrackIndexRef.current = currentTrackIndex;
+  }, [currentTrackIndex]);
+
+  useEffect(() => {
+    shuffleRef.current = shuffle;
+  }, [shuffle]);
+
+  useEffect(() => {
+    repeatModeRef.current = repeatMode;
+  }, [repeatMode]);
+
   // Toggle Mini Player Mode
   const toggleMiniPlayer = useCallback(() => {
     setIsMiniPlayerMode((prev) => {
@@ -672,12 +694,42 @@ export default function App() {
     loadPlaylist("top_hits");
   }, []);
 
+  // Pre-load the next track's videoId in the background for zero-pause continuous playback
+  const preloadNextTrackVideo = useCallback(async (currentIndex: number) => {
+    const currentTracks = tracksRef.current;
+    if (currentTracks.length <= 1) return;
+    const nextIdx = (currentIndex + 1) % currentTracks.length;
+    const nextTrack = currentTracks[nextIdx];
+    if (nextTrack && !nextTrack.videoId && !nextTrack.isLoadingVideo) {
+      try {
+        const preloadedId = await resolveYouTubeVideoIdClient(
+          nextTrack.nome_musica,
+          nextTrack.nome_artista
+        );
+        if (preloadedId) {
+          setTracks((prev) =>
+            prev.map((t, idx) =>
+              idx === nextIdx ? { ...t, videoId: preloadedId } : t
+            )
+          );
+        }
+      } catch (e) {
+        // silent pre-fetch background catch
+      }
+    }
+  }, []);
+
   // Resolve YouTube video ID for a specific track and start playback
   const playTrack = useCallback(async (index: number) => {
-    if (index < 0 || index >= tracks.length) return;
+    const currentTracks = tracksRef.current;
+    if (index < 0 || index >= currentTracks.length) return;
 
     setCurrentTrackIndex(index);
-    const targetTrack = tracks[index];
+    currentTrackIndexRef.current = index;
+    const targetTrack = currentTracks[index];
+
+    // Proactively preload the subsequent track in the background for zero-delay playback
+    preloadNextTrackVideo(index);
 
     // If we already have the YouTube videoId, load and play it immediately
     if (targetTrack.videoId) {
@@ -713,6 +765,9 @@ export default function App() {
           ytPlayerRef.current.loadVideo(resolvedVideoId);
           ytPlayerRef.current.play();
         }
+
+        // Trigger next track preload as well
+        preloadNextTrackVideo(index);
       } else {
         throw new Error("Vídeo não encontrado");
       }
@@ -723,48 +778,64 @@ export default function App() {
           idx === index ? { ...t, isLoadingVideo: false, hasError: true } : t
         )
       );
+      // Automatically skip to the next track if video resolution fails so the playlist doesn't stall
+      setTimeout(() => {
+        handleNextTrack();
+      }, 600);
     }
-  }, [tracks]);
+  }, [preloadNextTrackVideo]);
 
-  // Ao terminar uma musica ja tocar a outra (Auto-play next track)
+  // Ao terminar uma musica ja tocar a proxima sem pausa ate tocar todas da playlist
   const handleNextTrack = useCallback(() => {
-    if (tracks.length === 0 || currentTrackIndex === null) return;
+    const currentTracks = tracksRef.current;
+    const currentIndex = currentTrackIndexRef.current;
+    const currentRepeat = repeatModeRef.current;
+    const currentShuffle = shuffleRef.current;
 
-    if (repeatMode === "one") {
-      playTrack(currentTrackIndex);
+    if (currentTracks.length === 0 || currentIndex === null) return;
+
+    if (currentRepeat === "one") {
+      playTrack(currentIndex);
       return;
     }
 
-    if (shuffle) {
-      const randomIndex = Math.floor(Math.random() * tracks.length);
+    if (currentShuffle) {
+      let randomIndex = Math.floor(Math.random() * currentTracks.length);
+      if (currentTracks.length > 1 && randomIndex === currentIndex) {
+        randomIndex = (currentIndex + 1) % currentTracks.length;
+      }
       playTrack(randomIndex);
       return;
     }
 
-    const nextIndex = currentTrackIndex + 1;
-    if (nextIndex < tracks.length) {
+    const nextIndex = currentIndex + 1;
+    if (nextIndex < currentTracks.length) {
+      // Continue to the next song in the playlist
       playTrack(nextIndex);
-    } else if (repeatMode === "all") {
+    } else {
+      // Reached the end of the playlist: loop back to the start
       playTrack(0);
     }
-  }, [tracks, currentTrackIndex, repeatMode, shuffle, playTrack]);
+  }, [playTrack]);
 
   // Prev Track Logic
   const handlePrevTrack = useCallback(() => {
-    if (tracks.length === 0 || currentTrackIndex === null) return;
+    const currentTracks = tracksRef.current;
+    const currentIndex = currentTrackIndexRef.current;
+    if (currentTracks.length === 0 || currentIndex === null) return;
 
     if (currentTime > 3) {
       ytPlayerRef.current?.seekTo(0);
       return;
     }
 
-    const prevIndex = currentTrackIndex - 1;
+    const prevIndex = currentIndex - 1;
     if (prevIndex >= 0) {
       playTrack(prevIndex);
     } else {
-      playTrack(tracks.length - 1);
+      playTrack(currentTracks.length - 1);
     }
-  }, [tracks, currentTrackIndex, currentTime, playTrack]);
+  }, [currentTime, playTrack]);
 
   // Toggle Play / Pause
   const handleTogglePlayPause = useCallback(() => {
