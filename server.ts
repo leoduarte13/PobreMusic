@@ -50,17 +50,19 @@ const PORT = 3000;
 
 app.set("trust proxy", 1);
 
-// Enable CORS for all origins, allowing mobile APKs, PWAs, and external clients to use the API
+// Enable CORS to allow requests from https://pobremusic.vercel.app, Vercel deployments, mobile APKs, and external clients
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   if (origin) {
-    res.header("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Origin", origin);
   } else {
-    res.header("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Origin", "https://pobremusic.vercel.app");
   }
-  res.header("Access-Control-Allow-Credentials", "true");
-  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, HEAD");
-  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization, Cache-Control");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, HEAD");
+  res.setHeader("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization, Cache-Control");
+
+  // Responde imediatamente a requisições de teste do navegador (preflight)
   if (req.method === "OPTIONS") {
     return res.sendStatus(200);
   }

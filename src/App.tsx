@@ -37,7 +37,8 @@ import {
   subscribeToUserCloudPlaylists,
   saveUserSettingsToCloud 
 } from "./lib/firebase";
-import { fetchPlaylistSafe, resolveYouTubeVideoIdClient } from "./utils/clientMusicResolver";
+import { fetchPlaylistSafe, resolveYouTubeVideoIdClient, getCandidateBackendUrls } from "./utils/clientMusicResolver";
+import { playlistLogger } from "./utils/logger";
 import { AlertCircle, Disc3, Lock, LogIn } from "lucide-react";
 
 export default function App() {
@@ -637,6 +638,9 @@ export default function App() {
     setPlaylistError(null);
     setNeedsAuthNotice(false);
 
+    // Utilitário de log: Registra o início do carregamento e os hosts candidatos no console
+    playlistLogger.startLoad(urlOrId, getCandidateBackendUrls());
+
     try {
       if (!urlOrId || !urlOrId.trim()) {
         throw new Error("Por favor, informe o link ou ID da playlist do Spotify.");
@@ -654,6 +658,14 @@ export default function App() {
         throw new Error(errorDetail);
       }
 
+      // Log de sucesso com resumo da playlist
+      playlistLogger.finishLoad(urlOrId, {
+        sucesso: true,
+        totalFaixas: data.total_faixas,
+        nomePlaylist: data.nome_playlist,
+        modo: data.modo,
+      });
+
       setPlaylistData(data);
       setTracks(data.faixas || []);
 
@@ -663,6 +675,12 @@ export default function App() {
       }
     } catch (err: any) {
       console.error("Error loading playlist:", err);
+
+      // Log detalhado de falha para diagnóstico rápido no console
+      playlistLogger.finishLoad(urlOrId, {
+        sucesso: false,
+        error: err?.message || err,
+      });
 
       // Limpar a lista atual e zerar dados para evitar confusão visual
       setPlaylistData(null);

@@ -1,5 +1,6 @@
 import { PlaylistData, Track, TrackSearchResult } from "../types";
 import { PRESET_OPTIONS } from "../data/presetPlaylists";
+import { playlistLogger } from "./logger";
 
 // Production fallback hosts (when app is exported as APK, Capacitor, Cordova, file://, or static host)
 const DEV_RUN_BACKEND_URL = "https://ais-dev-scpvhniuyqfisqru6bsquo-19904035643.us-west1.run.app";
@@ -359,51 +360,81 @@ export async function fetchPlaylistSafe(
 
   const candidateHosts = getCandidateBackendUrls();
   for (const host of candidateHosts) {
+    const startTime = performance.now();
+    const endpoint = `${host}/api/spotify-playlist?url=${encodeURIComponent(urlOrId)}`;
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 12000);
 
-      const endpoint = `${host}/api/spotify-playlist?url=${encodeURIComponent(urlOrId)}`;
       const res = await fetch(endpoint, {
         headers,
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
+      const durationMs = performance.now() - startTime;
 
       const contentType = res.headers.get("content-type");
+      let data: any = null;
       if (contentType && contentType.includes("application/json")) {
-        const data = await res.json();
-        if (res.ok && data) {
-          if (Array.isArray(data) && data.length > 0) {
-            const formattedFaixas: Track[] = data.map((t: any) => ({
-              nome_musica: t.title || t.nome_musica || t.name || "Sem título",
-              nome_artista: t.artist || t.nome_artista || (t.artists ? (Array.isArray(t.artists) ? t.artists.map((a: any) => a.name || a).join(", ") : t.artists) : "Desconhecido"),
-              album: t.album || cleanId,
-              duracao_ms: t.duration || t.duracao_ms || t.duration_ms || 200000,
-              capa: t.image || t.capa || t.thumbnail || "",
-              videoId: t.videoId,
-              spotify_id: t.spotify_id || t.id,
-            }));
-            return {
-              data: {
-                sucesso: true,
-                playlist_id: cleanId,
-                nome_playlist: "Playlist Spotify",
-                descricao: "Playlist sincronizada via link do Spotify.",
-                capa_playlist: formattedFaixas[0]?.capa || "",
-                total_faixas: formattedFaixas.length,
-                faixas: formattedFaixas,
-              },
-            };
-          } else if (data.sucesso && Array.isArray(data.faixas) && data.faixas.length > 0) {
-            return { data };
-          }
-        }
-        if (data && (data.needsAuth || res.status === 401 || res.status === 403)) {
-          return { data, needsAuth: true };
+        try {
+          data = await res.json();
+        } catch (jsonErr) {
+          data = { parseError: "Não foi possível parsear resposta como JSON" };
         }
       }
-    } catch (err) {
+
+      // Log the exact API call with host and status
+      playlistLogger.logApiCall({
+        context: "API Spotify Playlist",
+        url: endpoint,
+        host: host || (typeof window !== "undefined" ? window.location.origin : "relativo"),
+        method: "GET",
+        status: res.status,
+        statusText: res.statusText,
+        durationMs,
+        contentType,
+        data,
+      });
+
+      if (res.ok && data) {
+        if (Array.isArray(data) && data.length > 0) {
+          const formattedFaixas: Track[] = data.map((t: any) => ({
+            nome_musica: t.title || t.nome_musica || t.name || "Sem título",
+            nome_artista: t.artist || t.nome_artista || (t.artists ? (Array.isArray(t.artists) ? t.artists.map((a: any) => a.name || a).join(", ") : t.artists) : "Desconhecido"),
+            album: t.album || cleanId,
+            duracao_ms: t.duration || t.duracao_ms || t.duration_ms || 200000,
+            capa: t.image || t.capa || t.thumbnail || "",
+            videoId: t.videoId,
+            spotify_id: t.spotify_id || t.id,
+          }));
+          return {
+            data: {
+              sucesso: true,
+              playlist_id: cleanId,
+              nome_playlist: "Playlist Spotify",
+              descricao: "Playlist sincronizada via link do Spotify.",
+              capa_playlist: formattedFaixas[0]?.capa || "",
+              total_faixas: formattedFaixas.length,
+              faixas: formattedFaixas,
+            },
+          };
+        } else if (data.sucesso && Array.isArray(data.faixas) && data.faixas.length > 0) {
+          return { data };
+        }
+      }
+      if (data && (data.needsAuth || res.status === 401 || res.status === 403)) {
+        return { data, needsAuth: true };
+      }
+    } catch (err: any) {
+      const durationMs = performance.now() - startTime;
+      playlistLogger.logApiCall({
+        context: "API Spotify Playlist (Exceção de Rede)",
+        url: endpoint,
+        host: host || (typeof window !== "undefined" ? window.location.origin : "relativo"),
+        method: "GET",
+        durationMs,
+        error: err?.message || err,
+      });
       console.warn(`Backend host ${host || "relative"} request notice, checking next:`, err);
     }
   }
