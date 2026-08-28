@@ -1335,4 +1335,10 @@ async function startServer() {
   });
 }
 
-startServer();
+export { app, startServer };
+export default app;
+
+if (!process.env.VERCEL) {
+  startServer();
+}
+

@@ -12,9 +12,10 @@ import {
   Smartphone,
   Plus,
   BookmarkCheck,
-  Disc3
+  Disc3,
+  UserCheck
 } from "lucide-react";
-import { ConfigStatus, SpotifyUser } from "../types";
+import { ConfigStatus, SpotifyUser, GoogleUserProfile } from "../types";
 import { PobreMusicLogo } from "./PobreMusicLogo";
 
 interface NavbarProps {
@@ -23,6 +24,10 @@ interface NavbarProps {
   isLoggingIn: boolean;
   onLoginSpotify: () => void;
   onLogoutSpotify: () => void;
+  googleUser: GoogleUserProfile | null;
+  isGoogleLoggingIn: boolean;
+  onLoginGoogle: () => void;
+  onLogoutGoogle: () => void;
   onOpenConfigModal: () => void;
   onToggleMiniPlayer?: () => void;
   onOpenEqualizerModal?: () => void;
@@ -35,6 +40,10 @@ export const Navbar: React.FC<NavbarProps> = ({
   isLoggingIn,
   onLoginSpotify,
   onLogoutSpotify,
+  googleUser,
+  isGoogleLoggingIn,
+  onLoginGoogle,
+  onLogoutGoogle,
   onOpenConfigModal,
   onToggleMiniPlayer,
   onOpenEqualizerModal,
@@ -75,7 +84,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               <button
                 id="btn-navbar-mini-player"
                 onClick={onToggleMiniPlayer}
-                className="min-h-[40px] flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700/80 text-xs font-semibold text-zinc-200 transition-all hover:text-white hover:border-emerald-500/50 shadow-sm"
+                className="min-h-[38px] flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700/80 text-xs font-semibold text-zinc-200 transition-all hover:text-white hover:border-emerald-500/50 shadow-sm"
                 title="Alternar para Mini Player Compacto (Tecla M)"
               >
                 <Minimize2 className="w-3.5 h-3.5 text-emerald-400" />
@@ -88,7 +97,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               <button
                 id="btn-navbar-equalizer"
                 onClick={onOpenEqualizerModal}
-                className="min-h-[40px] flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700/80 text-xs font-medium text-zinc-200 transition-all hover:text-white shadow-sm"
+                className="min-h-[38px] flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700/80 text-xs font-medium text-zinc-200 transition-all hover:text-white shadow-sm"
                 title="Abrir Equalizador"
               >
                 <Sliders className="w-3.5 h-3.5 text-teal-400" />
@@ -96,27 +105,91 @@ export const Navbar: React.FC<NavbarProps> = ({
               </button>
             )}
 
-            {/* User Auth Section */}
+            {/* Google Authentication Status / Button */}
+            {googleUser ? (
+              <div className="flex items-center gap-2 p-1 pl-2.5 pr-1.5 rounded-xl bg-zinc-900/90 border border-emerald-500/40">
+                <div className="flex items-center gap-2">
+                  {googleUser.photoURL ? (
+                    <img
+                      src={googleUser.photoURL}
+                      alt={googleUser.displayName || "Google User"}
+                      className="w-6 h-6 rounded-full object-cover border border-emerald-400/60"
+                    />
+                  ) : (
+                    <div className="w-6 h-6 rounded-full bg-emerald-500 text-zinc-950 flex items-center justify-center text-xs font-black">
+                      {(googleUser.displayName || googleUser.email || "G").charAt(0).toUpperCase()}
+                    </div>
+                  )}
+                  <div className="text-left">
+                    <p className="text-xs font-bold text-white leading-tight truncate max-w-[110px]">
+                      {googleUser.displayName || googleUser.email?.split("@")[0] || "Minha Conta"}
+                    </p>
+                    <span className="text-[10px] text-emerald-400 flex items-center gap-0.5 font-medium leading-none">
+                      <UserCheck className="w-2.5 h-2.5" /> Playlists Privadas
+                    </span>
+                  </div>
+                </div>
+
+                <button
+                  id="btn-google-logout"
+                  onClick={onLogoutGoogle}
+                  title="Sair da conta Google"
+                  className="min-h-[28px] min-w-[28px] flex items-center justify-center p-1 rounded-lg text-zinc-400 hover:text-red-400 hover:bg-zinc-800 transition-colors"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ) : (
+              <button
+                id="btn-google-login"
+                onClick={onLoginGoogle}
+                disabled={isGoogleLoggingIn}
+                className="min-h-[38px] flex items-center gap-2 px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700/80 hover:border-emerald-500 text-xs font-semibold text-white shadow-sm transition-all disabled:opacity-50"
+                title="Entrar com o Google para salvar suas playlists de forma individual e privada"
+              >
+                <svg className="w-4 h-4" viewBox="0 0 24 24">
+                  <path
+                    fill="#EA4335"
+                    d="M12 5c1.6 0 3 .6 4.1 1.7l3.1-3.1C17.3 1.8 14.8 1 12 1 7.5 1 3.7 3.6 1.9 7.3l3.7 2.9C6.5 7.4 9 5 12 5z"
+                  />
+                  <path
+                    fill="#4285F4"
+                    d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5c-.3 1.5-1.1 2.8-2.4 3.7l3.7 2.9c2.2-2 3.7-5 3.7-8.8z"
+                  />
+                  <path
+                    fill="#FBBC05"
+                    d="M5.6 14.8c-.2-.7-.4-1.5-.4-2.3s.2-1.6.4-2.3L1.9 7.3C.7 9.7 0 12.3 0 15.2s.7 5.5 1.9 7.9l3.7-2.9z"
+                  />
+                  <path
+                    fill="#34A853"
+                    d="M12 23.5c3.2 0 6-1.1 8-3l-3.7-2.9c-1.1.7-2.5 1.2-4.3 1.2-3 0-5.5-2.4-6.4-5.2L1.9 16.5C3.7 20.2 7.5 23.5 12 23.5z"
+                  />
+                </svg>
+                <span>{isGoogleLoggingIn ? "Entrando..." : "Entrar com Google"}</span>
+              </button>
+            )}
+
+            {/* Spotify Auth Section */}
             {spotifyUser ? (
-              <div className="flex items-center gap-2 p-1.5 pl-3 pr-2 rounded-xl bg-zinc-900 border border-zinc-800">
+              <div className="flex items-center gap-1.5 p-1 pl-2.5 pr-1.5 rounded-xl bg-zinc-900 border border-zinc-800">
                 <div className="flex items-center gap-2">
                   {spotifyUser.images && spotifyUser.images[0]?.url ? (
                     <img
                       src={spotifyUser.images[0].url}
                       alt={spotifyUser.display_name}
-                      className="w-6 h-6 rounded-full object-cover border border-emerald-500/50"
+                      className="w-5 h-5 rounded-full object-cover border border-[#1DB954]"
                     />
                   ) : (
-                    <div className="w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-xs font-bold">
+                    <div className="w-5 h-5 rounded-full bg-[#1DB954]/20 text-[#1DB954] flex items-center justify-center text-[10px] font-bold">
                       {spotifyUser.display_name.charAt(0).toUpperCase()}
                     </div>
                   )}
                   <div className="text-left">
-                    <p className="text-xs font-semibold text-white leading-tight truncate max-w-[120px]">
+                    <p className="text-[11px] font-semibold text-white leading-tight truncate max-w-[90px]">
                       {spotifyUser.display_name}
                     </p>
-                    <span className="text-[10px] text-emerald-400 flex items-center gap-1 font-medium">
-                      <ShieldCheck className="w-3 h-3" /> Privadas
+                    <span className="text-[9px] text-[#1DB954] flex items-center gap-0.5 font-medium leading-none">
+                      <ShieldCheck className="w-2.5 h-2.5" /> Spotify
                     </span>
                   </div>
                 </div>
@@ -125,9 +198,9 @@ export const Navbar: React.FC<NavbarProps> = ({
                   id="btn-spotify-logout"
                   onClick={onLogoutSpotify}
                   title="Desconectar do Spotify"
-                  className="min-h-[32px] min-w-[32px] flex items-center justify-center p-1 rounded-lg text-zinc-400 hover:text-red-400 hover:bg-zinc-800 transition-colors"
+                  className="min-h-[26px] min-w-[26px] flex items-center justify-center p-1 rounded-lg text-zinc-400 hover:text-red-400 hover:bg-zinc-800 transition-colors"
                 >
-                  <LogOut className="w-3.5 h-3.5" />
+                  <LogOut className="w-3 h-3" />
                 </button>
               </div>
             ) : (
@@ -135,11 +208,12 @@ export const Navbar: React.FC<NavbarProps> = ({
                 id="btn-spotify-login"
                 onClick={onLoginSpotify}
                 disabled={isLoggingIn}
-                className="min-h-[40px] flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-[#1DB954] hover:bg-[#1ed760] active:bg-[#1aa34a] text-zinc-950 font-bold text-xs shadow-md shadow-[#1db954]/20 transition-all disabled:opacity-50"
+                className="min-h-[38px] flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#1DB954] hover:bg-[#1ed760] active:bg-[#1aa34a] text-zinc-950 font-bold text-xs shadow-md shadow-[#1db954]/20 transition-all disabled:opacity-50"
+                title="Conectar Spotify para importar suas playlists"
               >
                 <LogIn className="w-3.5 h-3.5 stroke-[2.5]" />
                 <span>
-                  {isLoggingIn ? "Conectando..." : "Conectar Spotify"}
+                  {isLoggingIn ? "..." : "Conectar Spotify"}
                 </span>
               </button>
             )}
@@ -148,35 +222,35 @@ export const Navbar: React.FC<NavbarProps> = ({
             <button
               id="btn-open-config-guide"
               onClick={onOpenConfigModal}
-              className="min-h-[40px] flex items-center gap-2 px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700/80 text-xs font-medium text-zinc-200 transition-all hover:text-white hover:border-zinc-600 shadow-sm"
+              className="min-h-[38px] flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700/80 text-xs font-medium text-zinc-200 transition-all hover:text-white hover:border-zinc-600 shadow-sm"
               title="Instruções de Configuração e API"
             >
               <KeyRound className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Instruções & .env</span>
+              <span>Instruções</span>
             </button>
           </div>
 
           {/* Mobile Right Controls (<md) - Clean & Compact */}
           <div className="flex md:hidden items-center gap-1.5">
-            {/* Spotify Quick Status Badge / Icon on Mobile */}
-            {spotifyUser ? (
+            {/* Google Quick Status Badge on Mobile */}
+            {googleUser ? (
               <div 
                 onClick={() => setIsMobileMenuOpen(true)}
                 className="flex items-center gap-1.5 p-1 px-2 rounded-lg bg-zinc-900 border border-emerald-500/40 text-xs cursor-pointer"
               >
-                {spotifyUser.images && spotifyUser.images[0]?.url ? (
+                {googleUser.photoURL ? (
                   <img
-                    src={spotifyUser.images[0].url}
-                    alt={spotifyUser.display_name}
+                    src={googleUser.photoURL}
+                    alt={googleUser.displayName || "Google"}
                     className="w-5 h-5 rounded-full object-cover"
                   />
                 ) : (
-                  <div className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-[10px] font-bold">
-                    {spotifyUser.display_name.charAt(0).toUpperCase()}
+                  <div className="w-5 h-5 rounded-full bg-emerald-500 text-zinc-950 flex items-center justify-center text-[10px] font-bold">
+                    {(googleUser.displayName || googleUser.email || "G").charAt(0).toUpperCase()}
                   </div>
                 )}
                 <span className="text-[11px] font-semibold text-emerald-400 max-w-[65px] truncate">
-                  {spotifyUser.display_name}
+                  {googleUser.displayName || "Conta"}
                 </span>
               </div>
             ) : null}
@@ -224,18 +298,100 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </button>
               </div>
 
-              {/* User Profile Card inside Drawer */}
+              {/* Google Account Profile Card in Drawer */}
+              {googleUser ? (
+                <div className="p-3 rounded-xl bg-zinc-900 border border-emerald-500/40 space-y-2">
+                  <div className="flex items-center gap-2.5">
+                    {googleUser.photoURL ? (
+                      <img
+                        src={googleUser.photoURL}
+                        alt={googleUser.displayName || "User"}
+                        className="w-8 h-8 rounded-full object-cover border border-emerald-500"
+                      />
+                    ) : (
+                      <div className="w-8 h-8 rounded-full bg-emerald-500 text-zinc-950 flex items-center justify-center text-xs font-black">
+                        {(googleUser.displayName || googleUser.email || "G").charAt(0).toUpperCase()}
+                      </div>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-bold text-white truncate">
+                        {googleUser.displayName || googleUser.email}
+                      </p>
+                      <p className="text-[10px] text-emerald-400 flex items-center gap-1">
+                        <UserCheck className="w-3 h-3" /> Conta Google Conectada
+                      </p>
+                    </div>
+                  </div>
+
+                  <p className="text-[11px] text-zinc-400">
+                    Suas playlists salvas são privadas e salvas nesta conta.
+                  </p>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onLogoutGoogle();
+                      setIsMobileMenuOpen(false);
+                    }}
+                    className="w-full py-1.5 px-2.5 rounded-lg bg-zinc-800 hover:bg-red-950/40 border border-zinc-700/80 hover:border-red-800/40 text-zinc-300 hover:text-red-300 text-xs font-semibold flex items-center justify-center gap-1.5 transition-all"
+                  >
+                    <LogOut className="w-3.5 h-3.5 text-red-400" />
+                    <span>Sair da Conta Google</span>
+                  </button>
+                </div>
+              ) : (
+                <div className="p-3 rounded-xl bg-zinc-900 border border-zinc-800 space-y-2">
+                  <p className="text-xs font-bold text-white flex items-center gap-1.5">
+                    <UserCheck className="w-4 h-4 text-emerald-400" />
+                    Conta Individual POBREMUSIC
+                  </p>
+                  <p className="text-[11px] text-zinc-400">
+                    Faça login com sua conta Google para salvar suas playlists com total privacidade.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onLoginGoogle();
+                      setIsMobileMenuOpen(false);
+                    }}
+                    disabled={isGoogleLoggingIn}
+                    className="w-full py-2 px-3 rounded-xl bg-white hover:bg-zinc-100 text-zinc-950 font-bold text-xs flex items-center justify-center gap-2 shadow-md"
+                  >
+                    <svg className="w-4 h-4" viewBox="0 0 24 24">
+                      <path
+                        fill="#EA4335"
+                        d="M12 5c1.6 0 3 .6 4.1 1.7l3.1-3.1C17.3 1.8 14.8 1 12 1 7.5 1 3.7 3.6 1.9 7.3l3.7 2.9C6.5 7.4 9 5 12 5z"
+                      />
+                      <path
+                        fill="#4285F4"
+                        d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5c-.3 1.5-1.1 2.8-2.4 3.7l3.7 2.9c2.2-2 3.7-5 3.7-8.8z"
+                      />
+                      <path
+                        fill="#FBBC05"
+                        d="M5.6 14.8c-.2-.7-.4-1.5-.4-2.3s.2-1.6.4-2.3L1.9 7.3C.7 9.7 0 12.3 0 15.2s.7 5.5 1.9 7.9l3.7-2.9z"
+                      />
+                      <path
+                        fill="#34A853"
+                        d="M12 23.5c3.2 0 6-1.1 8-3l-3.7-2.9c-1.1.7-2.5 1.2-4.3 1.2-3 0-5.5-2.4-6.4-5.2L1.9 16.5C3.7 20.2 7.5 23.5 12 23.5z"
+                      />
+                    </svg>
+                    <span>{isGoogleLoggingIn ? "Conectando..." : "Entrar com Google"}</span>
+                  </button>
+                </div>
+              )}
+
+              {/* Spotify Profile Card inside Drawer */}
               {spotifyUser ? (
-                <div className="p-3 rounded-xl bg-zinc-900 border border-emerald-500/30 space-y-2">
+                <div className="p-3 rounded-xl bg-zinc-900 border border-[#1DB954]/30 space-y-2">
                   <div className="flex items-center gap-2.5">
                     {spotifyUser.images && spotifyUser.images[0]?.url ? (
                       <img
                         src={spotifyUser.images[0].url}
                         alt={spotifyUser.display_name}
-                        className="w-8 h-8 rounded-full object-cover border border-emerald-500/50"
+                        className="w-8 h-8 rounded-full object-cover border border-[#1DB954]"
                       />
                     ) : (
-                      <div className="w-8 h-8 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-xs font-bold">
+                      <div className="w-8 h-8 rounded-full bg-[#1DB954]/20 text-[#1DB954] flex items-center justify-center text-xs font-bold">
                         {spotifyUser.display_name.charAt(0).toUpperCase()}
                       </div>
                     )}
@@ -243,7 +399,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                       <p className="text-xs font-bold text-white truncate">
                         {spotifyUser.display_name}
                       </p>
-                      <p className="text-[10px] text-emerald-400 flex items-center gap-1">
+                      <p className="text-[10px] text-[#1DB954] flex items-center gap-1">
                         <ShieldCheck className="w-3 h-3" /> Spotify Conectado
                       </p>
                     </div>
@@ -258,16 +414,16 @@ export const Navbar: React.FC<NavbarProps> = ({
                     className="w-full py-1.5 px-2.5 rounded-lg bg-zinc-800 hover:bg-red-950/40 border border-zinc-700/80 hover:border-red-800/40 text-zinc-300 hover:text-red-300 text-xs font-semibold flex items-center justify-center gap-1.5 transition-all"
                   >
                     <LogOut className="w-3.5 h-3.5 text-red-400" />
-                    <span>Desconectar Conta</span>
+                    <span>Desconectar Spotify</span>
                   </button>
                 </div>
               ) : (
-                <div className="p-3 rounded-xl bg-zinc-900 border border-emerald-800/40 space-y-2">
+                <div className="p-3 rounded-xl bg-zinc-900 border border-zinc-800 space-y-2">
                   <p className="text-xs font-bold text-white">
                     Spotify Account
                   </p>
                   <p className="text-[11px] text-zinc-400">
-                    Conecte para acessar suas playlists privadas.
+                    Conecte para importar suas playlists criadas no Spotify.
                   </p>
                   <button
                     type="button"

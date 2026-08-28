@@ -22,14 +22,19 @@ import {
   SpotifyUser, 
   UserPlaylistSummary, 
   SavedPlaylist, 
-  EqualizerState 
+  EqualizerState,
+  GoogleUserProfile
 } from "./types";
 import { 
-  savePlaylistToCloud, 
-  deletePlaylistFromCloud, 
-  subscribeToCloudPlaylists,
+  signInWithGoogle,
+  logoutGoogle,
+  subscribeToAuth,
+  saveUserPlaylistToCloud, 
+  deleteUserPlaylistFromCloud, 
+  subscribeToUserCloudPlaylists,
   saveUserSettingsToCloud 
 } from "./lib/firebase";
+import { fetchPlaylistSafe, resolveYouTubeVideoIdClient } from "./utils/clientMusicResolver";
 import { AlertCircle, Disc3, Lock, LogIn } from "lucide-react";
 
 export default function App() {
@@ -75,7 +80,11 @@ export default function App() {
     };
   });
 
-  // Saved Playlists in local storage & Firestore Cloud
+  // Google Auth State
+  const [googleUser, setGoogleUser] = useState<GoogleUserProfile | null>(null);
+  const [isGoogleLoggingIn, setIsGoogleLoggingIn] = useState(false);
+
+  // Saved Playlists state
   const [savedPlaylists, setSavedPlaylists] = useState<SavedPlaylist[]>(() => {
     try {
       const saved = localStorage.getItem("spottube_saved_playlists");
@@ -86,20 +95,40 @@ export default function App() {
     return [];
   });
 
-  // Subscribe to Cloud Firestore Playlists in Real Time
+  // Listen to Google Auth state
   useEffect(() => {
-    const unsubscribe = subscribeToCloudPlaylists((cloudList) => {
-      if (cloudList && cloudList.length > 0) {
-        setSavedPlaylists(cloudList);
-        try {
-          localStorage.setItem("spottube_saved_playlists", JSON.stringify(cloudList));
-        } catch {}
-      }
+    const unsubscribe = subscribeToAuth((user) => {
+      setGoogleUser(user);
     });
     return () => unsubscribe();
   }, []);
 
-  // Auth State
+  // Subscribe to Cloud Firestore Playlists per authenticated user
+  useEffect(() => {
+    if (googleUser?.uid) {
+      const unsubscribe = subscribeToUserCloudPlaylists(googleUser.uid, (cloudList) => {
+        if (cloudList) {
+          setSavedPlaylists(cloudList);
+          try {
+            localStorage.setItem(`spottube_saved_playlists_${googleUser.uid}`, JSON.stringify(cloudList));
+          } catch {}
+        }
+      });
+      return () => unsubscribe();
+    } else {
+      // Unauthenticated fallback to local state
+      try {
+        const saved = localStorage.getItem("spottube_saved_playlists");
+        if (saved) {
+          setSavedPlaylists(JSON.parse(saved));
+        } else {
+          setSavedPlaylists([]);
+        }
+      } catch {}
+    }
+  }, [googleUser]);
+
+  // Auth State (Spotify)
   const [spotifyUser, setSpotifyUser] = useState<SpotifyUser | null>(null);
   const [userPlaylists, setUserPlaylists] = useState<UserPlaylistSummary[]>([]);
   const [isLoadingUserPlaylists, setIsLoadingUserPlaylists] = useState(false);
@@ -159,6 +188,28 @@ export default function App() {
     }
   };
 
+  // Google Login / Logout Handlers
+  const handleLoginGoogle = async () => {
+    setIsGoogleLoggingIn(true);
+    try {
+      const user = await signInWithGoogle();
+      setGoogleUser(user);
+    } catch (err: any) {
+      console.warn("Google login was cancelled or failed:", err);
+    } finally {
+      setIsGoogleLoggingIn(false);
+    }
+  };
+
+  const handleLogoutGoogle = async () => {
+    try {
+      await logoutGoogle();
+      setGoogleUser(null);
+    } catch (err) {
+      console.warn("Google logout error:", err);
+    }
+  };
+
   // Persist Equalizer settings & sync to cloud
   const handleUpdateEqState = (newState: EqualizerState) => {
     setEqState(newState);
@@ -167,21 +218,29 @@ export default function App() {
     } catch (e) {
       console.warn("Could not persist equalizer settings", e);
     }
-    saveUserSettingsToCloud({ equalizer: newState });
+    if (googleUser?.uid) {
+      saveUserSettingsToCloud(googleUser.uid, { equalizer: newState });
+    }
   };
 
   // Persist Saved Playlists locally and in Firestore Cloud
   const persistSavedPlaylists = (updated: SavedPlaylist[]) => {
     setSavedPlaylists(updated);
     try {
-      localStorage.setItem("spottube_saved_playlists", JSON.stringify(updated));
+      const storageKey = googleUser?.uid ? `spottube_saved_playlists_${googleUser.uid}` : "spottube_saved_playlists";
+      localStorage.setItem(storageKey, JSON.stringify(updated));
     } catch (e) {
       console.warn("Could not persist saved playlists", e);
     }
   };
 
   const handleSavePlaylist = async (newPlaylist: SavedPlaylist) => {
-    const playlistWithCloud = { ...newPlaylist, isCloud: true, updatedAt: Date.now() };
+    const playlistWithCloud: SavedPlaylist = { 
+      ...newPlaylist, 
+      userId: googleUser?.uid,
+      isCloud: !!googleUser?.uid, 
+      updatedAt: Date.now() 
+    };
     const existingIdx = savedPlaylists.findIndex((p) => p.id === playlistWithCloud.id || p.name === playlistWithCloud.name);
     let updated: SavedPlaylist[];
     if (existingIdx >= 0) {
@@ -192,23 +251,32 @@ export default function App() {
     }
     persistSavedPlaylists(updated);
 
-    // Sync directly with Cloud Firestore
-    try {
-      await savePlaylistToCloud(playlistWithCloud);
-    } catch (err) {
-      console.warn("Could not sync playlist to cloud Firestore:", err);
+    // Sync with Cloud Firestore if authenticated
+    if (googleUser?.uid) {
+      try {
+        await saveUserPlaylistToCloud(googleUser.uid, playlistWithCloud);
+      } catch (err) {
+        console.warn("Could not sync playlist to cloud Firestore:", err);
+      }
     }
   };
 
   const handleCreatePlaylist = async (newPlaylist: SavedPlaylist) => {
-    const playlistWithCloud = { ...newPlaylist, isCloud: true, updatedAt: Date.now() };
+    const playlistWithCloud: SavedPlaylist = { 
+      ...newPlaylist, 
+      userId: googleUser?.uid,
+      isCloud: !!googleUser?.uid, 
+      updatedAt: Date.now() 
+    };
     persistSavedPlaylists([playlistWithCloud, ...savedPlaylists]);
     
-    // Sync to Cloud Firestore
-    try {
-      await savePlaylistToCloud(playlistWithCloud);
-    } catch (err) {
-      console.warn("Could not sync created playlist to cloud:", err);
+    // Sync to Cloud Firestore if logged in
+    if (googleUser?.uid) {
+      try {
+        await saveUserPlaylistToCloud(googleUser.uid, playlistWithCloud);
+      } catch (err) {
+        console.warn("Could not sync created playlist to cloud:", err);
+      }
     }
 
     // Set as active playlist in view
@@ -216,7 +284,7 @@ export default function App() {
       sucesso: true,
       playlist_id: playlistWithCloud.id,
       nome_playlist: playlistWithCloud.name,
-      descricao: playlistWithCloud.description || "Playlist personalizada criada no SpotTube",
+      descricao: playlistWithCloud.description || "Playlist personalizada criada no POBREMUSIC",
       capa_playlist: playlistWithCloud.cover,
       total_faixas: playlistWithCloud.tracks.length,
       faixas: playlistWithCloud.tracks,
@@ -229,11 +297,13 @@ export default function App() {
     const updated = savedPlaylists.filter((p) => p.id !== id);
     persistSavedPlaylists(updated);
 
-    // Delete from Firestore Cloud
-    try {
-      await deletePlaylistFromCloud(id);
-    } catch (err) {
-      console.warn("Could not delete playlist from cloud Firestore:", err);
+    // Delete from Firestore Cloud if user is authenticated
+    if (googleUser?.uid) {
+      try {
+        await deleteUserPlaylistFromCloud(googleUser.uid, id);
+      } catch (err) {
+        console.warn("Could not delete playlist from cloud Firestore:", err);
+      }
     }
   };
 
@@ -458,7 +528,7 @@ export default function App() {
     }
   };
 
-  // Fetch Spotify Playlist via backend route /api/playlist
+  // Fetch Spotify Playlist via resilient fetcher (Server API with Client Fallback)
   const loadPlaylist = async (urlOrId: string) => {
     setIsLoadingPlaylist(true);
     setPlaylistError(null);
@@ -466,28 +536,14 @@ export default function App() {
 
     try {
       const token = localStorage.getItem("spotifyTokenManual") || localStorage.getItem("spotifyTokenManuaL");
-      const headers: Record<string, string> = {};
-      if (token) {
-        headers["Authorization"] = `Bearer ${token}`;
+      const { data, needsAuth } = await fetchPlaylistSafe(urlOrId, token);
+
+      if (needsAuth) {
+        setNeedsAuthNotice(true);
       }
 
-      const response = await fetch(`/api/playlist?id=${encodeURIComponent(urlOrId)}`, {
-        headers,
-      });
-      const data: PlaylistData = await response.json();
-
-      if (!response.ok || !data.sucesso) {
-        if ((data as any).needsAuth || response.status === 403 || response.status === 401) {
-          setNeedsAuthNotice(true);
-        }
-        const rawErr = (data as any)?.error;
-        let errMsg = "Falha ao extrair faixas da playlist";
-        if (typeof rawErr === "string") {
-          errMsg = rawErr;
-        } else if (rawErr && typeof rawErr === "object") {
-          errMsg = rawErr.message || JSON.stringify(rawErr);
-        }
-        throw new Error(errMsg);
+      if (!data || !data.sucesso || !data.faixas || data.faixas.length === 0) {
+        throw new Error("Não foi possível carregar as faixas desta playlist. Verifique se o link está correto ou conecte sua conta Spotify.");
       }
 
       setPlaylistData(data);
@@ -527,23 +583,19 @@ export default function App() {
       return;
     }
 
-    // Otherwise, fetch videoId via Backend /api/search
+    // Otherwise, fetch videoId via resilient resolver
     setTracks((prev) =>
       prev.map((t, idx) => (idx === index ? { ...t, isLoadingVideo: true } : t))
     );
 
     try {
-      const query = `${targetTrack.nome_musica} ${targetTrack.nome_artista}`;
-      const searchRes = await fetch(
-        `/api/search?q=${encodeURIComponent(query)}&nome_musica=${encodeURIComponent(
-          targetTrack.nome_musica
-        )}&nome_artista=${encodeURIComponent(targetTrack.nome_artista)}`
+      const resolvedVideoId = await resolveYouTubeVideoIdClient(
+        targetTrack.nome_musica,
+        targetTrack.nome_artista,
+        targetTrack.videoId
       );
-      const searchData = await searchRes.json();
 
-      if (searchRes.ok && searchData.videoId) {
-        const resolvedVideoId = searchData.videoId;
-
+      if (resolvedVideoId) {
         setTracks((prev) =>
           prev.map((t, idx) =>
             idx === index
@@ -557,7 +609,7 @@ export default function App() {
           ytPlayerRef.current.play();
         }
       } else {
-        throw new Error(searchData.error || "Vídeo não encontrado");
+        throw new Error("Vídeo não encontrado");
       }
     } catch (err) {
       console.error("Error searching track on YouTube:", err);
@@ -829,6 +881,10 @@ export default function App() {
             isLoggingIn={isLoggingIn}
             onLoginSpotify={handleLoginSpotify}
             onLogoutSpotify={handleLogoutSpotify}
+            googleUser={googleUser}
+            isGoogleLoggingIn={isGoogleLoggingIn}
+            onLoginGoogle={handleLoginGoogle}
+            onLogoutGoogle={handleLogoutGoogle}
             onOpenConfigModal={() => setIsConfigModalOpen(true)}
             onToggleMiniPlayer={toggleMiniPlayer}
             onOpenEqualizerModal={() => setIsEqualizerModalOpen(true)}
@@ -848,6 +904,8 @@ export default function App() {
               isLoadingUserPlaylists={isLoadingUserPlaylists}
               onLoginSpotify={handleLoginSpotify}
               onRefreshUserPlaylists={fetchUserPlaylists}
+              googleUser={googleUser}
+              onLoginGoogle={handleLoginGoogle}
               savedPlaylists={savedPlaylists}
               onSelectSavedPlaylist={handleSelectSavedPlaylist}
               onDeleteSavedPlaylist={handleDeleteSavedPlaylist}

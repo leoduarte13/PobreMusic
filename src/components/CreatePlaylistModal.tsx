@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { X, Plus, Trash2, Music2, Search, Sparkles, Disc3, Check, Loader2 } from "lucide-react";
 import { Track, SavedPlaylist } from "../types";
+import { searchMusicTracksClient } from "../utils/clientMusicResolver";
 
 interface CreatePlaylistModalProps {
   isOpen: boolean;
@@ -50,22 +51,24 @@ export const CreatePlaylistModal: React.FC<CreatePlaylistModalProps> = ({
     setTracks(tracks.filter((_, i) => i !== index));
   };
 
-  // Search track via backend search
+  // Search track via client resolver
   const handleSearchTrack = async () => {
     if (!searchQuery.trim()) return;
     setIsSearching(true);
     try {
-      const res = await fetch(`/api/search?q=${encodeURIComponent(searchQuery)}`);
-      const data = await res.json();
-      if (res.ok && data.videoId) {
-        setSearchResults([
-          {
-            nome_musica: data.titulo || searchQuery,
-            nome_artista: data.canal || "Artista",
-            videoId: data.videoId,
-            album: "YouTube Audio",
-          },
-        ]);
+      const results = await searchMusicTracksClient(searchQuery.trim());
+      if (results && results.length > 0) {
+        setSearchResults(
+          results.slice(0, 8).map((r) => ({
+            nome_musica: r.nome_musica,
+            nome_artista: r.nome_artista,
+            album: r.album || "Single",
+            capa: r.capa,
+            duracao_ms: r.duracao_ms,
+            videoId: r.videoId,
+            spotify_id: r.spotify_id,
+          }))
+        );
       }
     } catch (err) {
       console.warn("Search error:", err);

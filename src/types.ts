@@ -63,8 +63,16 @@ export interface ConfigStatus {
 
 export type PlaybackStatus = 'unstarted' | 'ended' | 'playing' | 'paused' | 'buffering' | 'cued' | 'error';
 
+export interface GoogleUserProfile {
+  uid: string;
+  displayName: string | null;
+  email: string | null;
+  photoURL: string | null;
+}
+
 export interface SavedPlaylist {
   id: string;
+  userId?: string;
   name: string;
   description?: string;
   cover?: string;

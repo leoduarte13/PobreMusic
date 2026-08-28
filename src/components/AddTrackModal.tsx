@@ -13,6 +13,7 @@ import {
   Layers
 } from "lucide-react";
 import { Track, TrackSearchResult } from "../types";
+import { searchMusicTracksClient } from "../utils/clientMusicResolver";
 
 interface AddTrackModalProps {
   isOpen: boolean;
@@ -55,17 +56,14 @@ export const AddTrackModal: React.FC<AddTrackModalProps> = ({
     const timer = setTimeout(async () => {
       setIsSearching(true);
       try {
-        const res = await fetch(`/api/search-tracks?q=${encodeURIComponent(searchQuery.trim())}`);
-        if (res.ok) {
-          const data = await res.json();
-          setSearchResults(data.tracks || []);
-        }
+        const tracks = await searchMusicTracksClient(searchQuery.trim());
+        setSearchResults(tracks || []);
       } catch (err) {
         console.warn("Search tracks error:", err);
       } finally {
         setIsSearching(false);
       }
-    }, 400);
+    }, 350);
 
     return () => clearTimeout(timer);
   }, [searchQuery, activeTab]);
