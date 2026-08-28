@@ -1,0 +1,6 @@
+{
+  "name": "POBREMUSIC",
+  "description": "POBREMUSIC - Reprodutor e conversor de playlists do Spotify com streaming de áudio completo pelo YouTube sem propagandas invasivas.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

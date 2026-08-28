@@ -1,0 +1,15 @@
+{
+  "entities": {
+    "playlists": {
+      "fields": {
+        "id": { "type": "string", "description": "Unique playlist identifier" },
+        "name": { "type": "string", "description": "Playlist name" },
+        "description": { "type": "string", "description": "Playlist description" },
+        "cover": { "type": "string", "description": "Cover image URL" },
+        "tracks": { "type": "array", "description": "Array of track objects with title, artist, album, duration, videoId, cover" },
+        "createdAt": { "type": "string", "description": "Creation timestamp" },
+        "updatedAt": { "type": "string", "description": "Last updated timestamp" }
+      }
+    }
+  }
+}
