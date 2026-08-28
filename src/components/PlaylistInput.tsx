@@ -194,7 +194,8 @@ export const PlaylistInput: React.FC<PlaylistInputProps> = ({
                   <Search className="w-4 h-4" />
                 </div>
                 <input
-                  id="input-spotify-playlist-url"
+                  id="inputLinkPlaylist"
+                  name="inputLinkPlaylist"
                   type="text"
                   value={inputValue}
                   onChange={(e) => setInputValue(e.target.value)}

@@ -606,7 +606,7 @@ export default function App() {
       setCurrentTime(0);
       setDuration(0);
 
-      const rawMsg = typeof err === "string" ? err : err?.message || "Não foi possível processar o link informado.";
+      const rawMsg = typeof err === "string" ? err : err?.message || "Não foi possível carregar as músicas deste link. Verifique se a playlist é pública ou conecte sua conta Spotify para playlists privadas.";
       setPlaylistError(rawMsg);
     } finally {
       setIsLoadingPlaylist(false);

@@ -937,18 +937,18 @@ app.get("/api/config-status", (req, res) => {
 });
 
 // API: Get Spotify Playlist Tracks
-// Supported Routes: /api/playlist-tracks, /api/playlist, /api/playlist/:id, /api/playlist-tracks/:id
-app.all(["/api/playlist-tracks", "/api/playlist-tracks/:id", "/api/playlist", "/api/playlist/:id"], async (req, res) => {
+// Supported Routes: /api/spotify-playlist, /api/spotify-playlist/:id, /api/playlist-tracks, /api/playlist, /api/playlist/:id, /api/playlist-tracks/:id
+app.all(["/api/spotify-playlist", "/api/spotify-playlist/:id", "/api/playlist-tracks", "/api/playlist-tracks/:id", "/api/playlist", "/api/playlist/:id"], async (req, res) => {
   try {
-    let rawInput = (req.params.id || req.query.id || req.query.url || req.body?.id || req.body?.url || req.body?.playlistId || "") as string;
+    let rawInput = (req.params.id || req.query.url || req.query.id || req.body?.url || req.body?.id || req.body?.playlistId || "") as string;
     rawInput = await resolvePossibleShortlink(rawInput);
     const parsedResource = parseSpotifyResource(rawInput);
     const playlistId = parsedResource.id;
     const resourceType = parsedResource.type === "preset" ? "playlist" : parsedResource.type;
 
-    if (!playlistId) {
+    if (!playlistId && !rawInput.trim()) {
       return res.status(400).json({ 
-        error: "ID da playlist não fornecido.",
+        error: "URL não fornecida",
         sucesso: false,
         exemplo: "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M ou 37i9dQZF1DXcBWIGoYBM5M" 
       });
@@ -1060,34 +1060,48 @@ app.all(["/api/playlist-tracks", "/api/playlist-tracks/:id", "/api/playlist", "/
       }
     }
 
-    // 3. Direct Spotify HTML scraping via spotify-url-info
+    // 3. Direct Spotify HTML scraping via spotify-url-info (getData / getTracks)
     const canonicalPlaylistUrl = `https://open.spotify.com/${resourceType}/${playlistId}`;
     try {
-      let playlistMeta: any = null;
+      let spotifyData: any = null;
       try {
-        playlistMeta = await spotifyScraper.getData(canonicalPlaylistUrl);
+        spotifyData = await spotifyScraper.getData(canonicalPlaylistUrl);
       } catch {}
 
-      const rawTracks = await spotifyScraper.getTracks(canonicalPlaylistUrl);
+      let rawTracks: any[] = [];
+      if (spotifyData?.type === "playlist" && spotifyData.trackList && Array.isArray(spotifyData.trackList) && spotifyData.trackList.length > 0) {
+        rawTracks = spotifyData.trackList;
+      } else if (spotifyData?.tracks && Array.isArray(spotifyData.tracks) && spotifyData.tracks.length > 0) {
+        rawTracks = spotifyData.tracks;
+      } else {
+        try {
+          rawTracks = await spotifyScraper.getTracks(canonicalPlaylistUrl);
+        } catch {}
+      }
+
       if (rawTracks && Array.isArray(rawTracks) && rawTracks.length > 0) {
         const formattedTracks = rawTracks.map((faixa: any) => {
-          const nomeMusica = faixa.name || faixa.title || "Sem título";
+          const nomeMusica = faixa.title || faixa.name || "Sem título";
           let nomeArtista = "Desconhecido";
 
-          if (Array.isArray(faixa.artists)) {
+          if (faixa.artist) {
+            nomeArtista = typeof faixa.artist === "string" ? faixa.artist : faixa.artist.name || "Desconhecido";
+          } else if (faixa.subtitle) {
+            nomeArtista = faixa.subtitle;
+          } else if (Array.isArray(faixa.artists)) {
             nomeArtista = faixa.artists.map((a: any) => (typeof a === "string" ? a : a.name)).join(", ");
-          } else if (typeof faixa.artists === "string") {
-            nomeArtista = faixa.artists;
-          } else if (typeof faixa.artist === "string") {
-            nomeArtista = faixa.artist;
           }
 
           const duracaoMs = faixa.duration_ms || faixa.duration || faixa.maxDuration || 0;
-          const albumName = faixa.album?.name || (typeof faixa.album === "string" ? faixa.album : "");
-          const capaImg = faixa.coverArt?.sources?.[0]?.url || faixa.album?.images?.[0]?.url || faixa.image || playlistMeta?.coverArt?.sources?.[0]?.url || "";
+          const albumName = faixa.album?.name || (typeof faixa.album === "string" ? faixa.album : "") || spotifyData?.name || spotifyData?.title || "";
+          const capaImg = spotifyData?.thumbnail || (spotifyData?.images && spotifyData.images[0]?.url) || faixa.coverArt?.sources?.[0]?.url || faixa.album?.images?.[0]?.url || faixa.image || spotifyData?.coverArt?.sources?.[0]?.url || "";
           const spotifyId = faixa.id || faixa.uri || "";
 
           return {
+            title: nomeMusica,
+            artist: nomeArtista,
+            duration: duracaoMs,
+            image: capaImg,
             nome_musica: nomeMusica,
             nome_artista: nomeArtista,
             duracao_ms: duracaoMs,
@@ -1097,15 +1111,19 @@ app.all(["/api/playlist-tracks", "/api/playlist-tracks/:id", "/api/playlist", "/
           };
         });
 
+        if (req.query.format === "array") {
+          return res.json(formattedTracks);
+        }
+
         return res.json({
           sucesso: true,
           playlist_id: playlistId,
-          nome_playlist: playlistMeta?.name || playlistMeta?.title || "Playlist Spotify",
-          descricao: playlistMeta?.description || "Extraída diretamente via spotify-url-info.",
-          capa_playlist: playlistMeta?.coverArt?.sources?.[0]?.url || playlistMeta?.images?.[0]?.url || formattedTracks[0]?.capa || "",
+          nome_playlist: spotifyData?.name || spotifyData?.title || "Playlist Spotify",
+          descricao: spotifyData?.description || "Extraída diretamente via spotify-url-info.",
+          capa_playlist: spotifyData?.thumbnail || (spotifyData?.images && spotifyData.images[0]?.url) || spotifyData?.coverArt?.sources?.[0]?.url || formattedTracks[0]?.capa || "",
           total_faixas: formattedTracks.length,
           faixas: formattedTracks,
-          modo: "spotify_url_info_scraper"
+          modo: "spotify_url_info"
         });
       }
     } catch (scraperErr: any) {
