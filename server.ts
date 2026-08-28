@@ -456,6 +456,11 @@ const PRESET_PLAYLISTS: Record<string, any> = {
 // SPOTIFY OAUTH 2.0 & AUTHENTICATION
 // ==========================================
 
+// Health check endpoint
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok", uptime: process.uptime(), timestamp: Date.now() });
+});
+
 // Endpoint to get Spotify Authorization URL (Used by Popup in UI)
 app.get("/api/auth/spotify/url", (req, res) => {
   const { clientId } = getSpotifyCredentials(req);
