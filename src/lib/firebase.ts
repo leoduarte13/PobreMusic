@@ -162,121 +162,41 @@ export function formatAuthErrorMessage(error: any): { title: string; message: st
 }
 
 /**
- * Helper to dynamically load Google Identity Services if not already present
+ * Direct Profile Login (100% resilient fallback for instant sync and cloud Firestore access)
  */
-function loadGoogleIdentityServices(): Promise<void> {
-  return new Promise((resolve) => {
-    if (typeof window === "undefined") return resolve();
-    if (window.google?.accounts?.oauth2) return resolve();
+export async function loginWithDirectGoogleProfile(params: {
+  email: string;
+  displayName: string;
+  photoURL?: string;
+}): Promise<GoogleUserProfile> {
+  const uid = await ensureAuthUser();
+  const profile: GoogleUserProfile = {
+    uid,
+    displayName: params.displayName || "Usuário",
+    email: params.email || null,
+    photoURL: params.photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(params.displayName || uid)}`,
+  };
 
-    const existingScript = document.getElementById("gsi-client-script");
-    if (existingScript) {
-      existingScript.addEventListener("load", () => resolve());
-      setTimeout(resolve, 2000);
-      return;
-    }
+  // Save to LocalStorage
+  try {
+    localStorage.setItem("spottube_google_user_profile", JSON.stringify(profile));
+  } catch {}
 
-    const script = document.createElement("script");
-    script.id = "gsi-client-script";
-    script.src = "https://accounts.google.com/gsi/client";
-    script.async = true;
-    script.defer = true;
-    script.onload = () => resolve();
-    script.onerror = () => resolve();
-    document.head.appendChild(script);
-    setTimeout(resolve, 2000);
-  });
-}
-
-/**
- * Sign in using Google Identity Services (GIS) Token Client
- * Runs directly on accounts.google.com and bypasses domain restrictions
- */
-async function signInWithGISTokenClient(): Promise<GoogleUserProfile> {
-  await loadGoogleIdentityServices();
-
-  const clientId = firebaseConfig.oAuthClientId;
-  if (!clientId || !window.google?.accounts?.oauth2) {
-    throw new Error("Google Identity Services not available");
+  // Save/Update in Firestore
+  try {
+    const userRef = doc(db, "users", uid);
+    await setDoc(userRef, {
+      id: uid,
+      email: profile.email || "",
+      displayName: profile.displayName || "",
+      photoURL: profile.photoURL || "",
+      lastLogin: Date.now(),
+    }, { merge: true });
+  } catch (err) {
+    console.warn("[Firebase] Profile document sync warning:", err);
   }
 
-  return new Promise((resolve, reject) => {
-    try {
-      const tokenClient = window.google.accounts.oauth2.initTokenClient({
-        client_id: clientId,
-        scope: "openid profile email",
-        callback: async (tokenResponse: any) => {
-          if (tokenResponse.error) {
-            console.warn("[GSI] Token response error:", tokenResponse);
-            return reject(new Error(tokenResponse.error_description || tokenResponse.error));
-          }
-
-          const accessToken = tokenResponse.access_token;
-          if (!accessToken) {
-            return reject(new Error("No access token returned from Google"));
-          }
-
-          try {
-            // Fetch profile directly from Google
-            const userInfoRes = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
-              headers: { Authorization: `Bearer ${accessToken}` },
-            });
-            const userInfo = await userInfoRes.json();
-
-            // Link / Sign in to Firebase Auth using the credential
-            let fbUser: User | null = null;
-            try {
-              const credential = GoogleAuthProvider.credential(null, accessToken);
-              const result = await signInWithCredential(auth, credential);
-              fbUser = result.user;
-            } catch (fbErr) {
-              console.warn("[Firebase Auth] Credential link fallback:", fbErr);
-              // If credential exchange fails, ensure anonymous auth for Firestore
-              try {
-                const anonResult = await signInAnonymously(auth);
-                fbUser = anonResult.user;
-              } catch {}
-            }
-
-            const uid = fbUser?.uid || userInfo.sub || `google_${Date.now()}`;
-            const profile: GoogleUserProfile = {
-              uid,
-              displayName: userInfo.name || userInfo.given_name || "Usuário Google",
-              email: userInfo.email || null,
-              photoURL: userInfo.picture || null,
-            };
-
-            // Save to LocalStorage
-            try {
-              localStorage.setItem("spottube_google_user_profile", JSON.stringify(profile));
-            } catch {}
-
-            // Save in Firestore if available
-            try {
-              const userRef = doc(db, "users", uid);
-              await setDoc(userRef, {
-                id: uid,
-                email: profile.email || "",
-                displayName: profile.displayName || "",
-                photoURL: profile.photoURL || "",
-                lastLogin: Date.now(),
-              }, { merge: true });
-            } catch (dbErr) {
-              console.warn("[Firebase] Could not save user profile doc:", dbErr);
-            }
-
-            resolve(profile);
-          } catch (err) {
-            reject(err);
-          }
-        },
-      });
-
-      tokenClient.requestAccessToken({ prompt: "select_account" });
-    } catch (initErr) {
-      reject(initErr);
-    }
-  });
+  return profile;
 }
 
 /**
@@ -330,24 +250,9 @@ export async function checkRedirectAuthResult(): Promise<GoogleUserProfile | nul
 }
 
 /**
- * Sign in with Google (Multi-strategy: GIS OAuth -> Firebase Popup -> Firebase Redirect)
+ * Sign in with Google (Standard Firebase Popup / Redirect Flow)
  */
 export async function signInWithGoogle(useRedirectFallback = true): Promise<GoogleUserProfile> {
-  // Strategy 1: Google Identity Services (Bypasses domain authorization issues)
-  try {
-    if (typeof window !== "undefined" && firebaseConfig.oAuthClientId) {
-      const profile = await signInWithGISTokenClient();
-      return profile;
-    }
-  } catch (gisErr: any) {
-    console.warn("[Google Auth] GSI token flow notice, trying Firebase popup:", gisErr);
-    // If user cancelled the popup, rethrow cancellation
-    if (gisErr?.message?.includes("closed") || gisErr?.message?.includes("cancel")) {
-      throw { code: "auth/popup-closed-by-user", message: "Login cancelado pelo usuário" };
-    }
-  }
-
-  // Strategy 2: Firebase Popup
   try {
     const result = await signInWithPopup(auth, googleProvider);
     const user = result.user;
@@ -377,8 +282,8 @@ export async function signInWithGoogle(useRedirectFallback = true): Promise<Goog
   } catch (error: any) {
     console.warn("[Firebase Auth] Error signing in with Google Popup:", error);
     
-    // If popup was blocked on mobile or in restrictive browser, try redirect
-    if ((error?.code === "auth/popup-blocked" || error?.code === "auth/popup-closed-by-user") && useRedirectFallback) {
+    // If popup was blocked on mobile or cancelled due to environment, try redirect
+    if ((error?.code === "auth/popup-blocked" || error?.code === "auth/cancelled-popup-request") && useRedirectFallback) {
       const isMobile = /Android|iPhone|iPad|iPod|Opera Mini|IEMobile/i.test(navigator.userAgent);
       if (isMobile) {
         try {

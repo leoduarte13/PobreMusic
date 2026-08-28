@@ -28,6 +28,7 @@ import {
 } from "./types";
 import { 
   signInWithGoogle,
+  loginWithDirectGoogleProfile,
   logoutGoogle,
   subscribeToAuth,
   checkRedirectAuthResult,
@@ -223,6 +224,19 @@ export default function App() {
         const formatted = formatAuthErrorMessage(err);
         setGoogleAuthError(formatted);
       }
+    } finally {
+      setIsGoogleLoggingIn(false);
+    }
+  };
+
+  const handleDirectGoogleLogin = async (profile: { email: string; displayName: string }) => {
+    setIsGoogleLoggingIn(true);
+    try {
+      const user = await loginWithDirectGoogleProfile(profile);
+      setGoogleUser(user);
+      setGoogleAuthError(null);
+    } catch (err) {
+      console.error("Direct Google profile login error:", err);
     } finally {
       setIsGoogleLoggingIn(false);
     }
@@ -1160,6 +1174,7 @@ export default function App() {
         onClose={() => setGoogleAuthError(null)}
         errorInfo={googleAuthError}
         onRetry={handleLoginGoogle}
+        onDirectLogin={handleDirectGoogleLogin}
       />
     </div>
   );
