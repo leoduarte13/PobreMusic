@@ -5,5 +5,13 @@
       "source": "/api/(.*)",
       "destination": "/api/index.ts"
     }
+  ],
+  "headers": [
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store" }
+      ]
+    }
   ]
 }
