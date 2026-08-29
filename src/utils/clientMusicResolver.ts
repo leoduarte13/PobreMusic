@@ -3,8 +3,8 @@ import { PRESET_OPTIONS } from "../data/presetPlaylists";
 import { playlistLogger } from "./logger";
 
 // Production fallback hosts (when app is exported as APK, Capacitor, Cordova, file://, or static host)
-const DEV_RUN_BACKEND_URL = "https://ais-dev-scpvhniuyqfisqru6bsquo-19904035643.us-west1.run.app";
-const CLOUD_RUN_BACKEND_URL = "https://ais-pre-scpvhniuyqfisqru6bsquo-19904035643.us-west1.run.app";
+const DEV_RUN_BACKEND_URL = "https://pobremusic.vercel.app";
+const CLOUD_RUN_BACKEND_URL = "https://pobremusic.vercel.app";
 
 /**
  * Returns candidate backend URLs to try in order of priority:
