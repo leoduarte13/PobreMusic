@@ -82,6 +82,44 @@ async function getValidAccessToken(): Promise<string> {
   memoryConfig.accessToken = data.access_token;
   memoryConfig.tokenExpiresAt = Date.now() + (data.expires_in * 1000);
   return data.access_token;
+  async function getAllPlaylistItems(
+  playlistId: string,
+  token: string
+): Promise<any[]> {
+  const allItems: any[] = [];
+  let url:
+    | string
+    | null =
+    `https://api.spotify.com/v1/playlists/${encodeURIComponent(
+      playlistId
+    )}/items?limit=50&market=BR`;
+
+  while (url) {
+    const response = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+
+      throw new Error(
+        `Spotify ${response.status}: ${text}`
+      );
+    }
+
+    const data = await response.json();
+
+    if (Array.isArray(data.items)) {
+      allItems.push(...data.items);
+    }
+
+    url = data.next || null;
+  }
+
+  return allItems;
+}
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
