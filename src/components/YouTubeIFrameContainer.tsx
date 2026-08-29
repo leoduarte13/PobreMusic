@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useImperativeHandle, forwardRef } from "react";
 import { PlaybackStatus } from "../types";
-import { Youtube, EyeOff, Maximize2, Minimize2, X } from "lucide-react";
+import { Youtube, Maximize2, Minimize2, X, Play, Pause, Volume2 } from "lucide-react";
 
 declare global { interface Window { YT: any; onYouTubeIframeAPIReady: () => void; } }
 
@@ -22,6 +22,7 @@ export const YouTubeIFrameContainer = forwardRef<YouTubePlayerRef, YouTubeIFrame
   const [isPlayerReady, setIsPlayerReady] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
   const timeUpdateInterval = useRef<any>(null);
   const lastEndedTrackTime = useRef(0);
   const lastLoadedVideoId = useRef<string | undefined>(undefined);
@@ -50,7 +51,7 @@ export const YouTubeIFrameContainer = forwardRef<YouTubePlayerRef, YouTubeIFrame
         playerVars: { autoplay: 1, controls: 0, disablekb: 1, fs: 0, modestbranding: 1, rel: 0, showinfo: 0, iv_load_policy: 3, playsinline: 1, origin: window.location.origin },
         events: {
           onReady: (event: any) => { setIsPlayerReady(true); event.target.setVolume(volume); if (currentVideoId) { lastLoadedVideoId.current = currentVideoId; event.target.loadVideoById({ videoId: currentVideoId, startSeconds: 0 }); } },
-          onStateChange: (event: any) => { switch (event.data) { case 1: callbacksRef.current.onStatusChange("playing"); break; case 2: callbacksRef.current.onStatusChange("paused"); break; case 3: callbacksRef.current.onStatusChange("buffering"); break; case 0: triggerTrackEnded(); break; case 5: callbacksRef.current.onStatusChange("cued"); break; default: callbacksRef.current.onStatusChange("unstarted"); } },
+          onStateChange: (event: any) => { switch (event.data) { case 1: setIsPlaying(true); callbacksRef.current.onStatusChange("playing"); break; case 2: setIsPlaying(false); callbacksRef.current.onStatusChange("paused"); break; case 3: callbacksRef.current.onStatusChange("buffering"); break; case 0: setIsPlaying(false); triggerTrackEnded(); break; case 5: callbacksRef.current.onStatusChange("cued"); break; default: setIsPlaying(false); callbacksRef.current.onStatusChange("unstarted"); } },
           onError: (event: any) => { console.error("YouTube Player Error Code:", event.data); callbacksRef.current.onError(event.data); },
         },
       });
@@ -73,21 +74,27 @@ export const YouTubeIFrameContainer = forwardRef<YouTubePlayerRef, YouTubeIFrame
 
   useEffect(() => { if (isPlayerReady) playerRef.current?.setVolume?.(volume); }, [volume, isPlayerReady]);
 
+  const togglePlayback = () => {
+    if (!playerRef.current) return;
+    const state = playerRef.current.getPlayerState?.();
+    if (state === 1) playerRef.current.pauseVideo?.(); else playerRef.current.playVideo?.();
+  };
+
   return <>
-    {currentVideoId && showPreview && (
-      <div className={`fixed z-[70] ${expanded ? "inset-3 sm:inset-auto sm:bottom-24 sm:right-6 sm:w-[560px]" : "bottom-20 right-3 sm:bottom-24 sm:right-6 w-[calc(100vw-24px)] sm:w-[380px]"} rounded-2xl overflow-hidden bg-zinc-950 border border-zinc-700 shadow-2xl`}>
-        <div className="flex items-center justify-between h-11 px-3 border-b border-zinc-800 bg-zinc-900/95">
-          <div className="flex items-center gap-2 min-w-0"><Youtube className="w-4 h-4 text-red-500 shrink-0" /><span className="text-xs font-semibold text-zinc-200 truncate">Prévia da música</span></div>
-          <div className="flex items-center gap-1"><button onClick={() => setExpanded(v => !v)} className="w-8 h-8 rounded-lg flex items-center justify-center text-zinc-400 hover:text-white hover:bg-zinc-800" title={expanded ? "Reduzir" : "Expandir"} aria-label={expanded ? "Reduzir prévia" : "Expandir prévia"}>{expanded ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}</button><button onClick={() => { setShowPreview(false); setExpanded(false); }} className="w-8 h-8 rounded-lg flex items-center justify-center text-zinc-400 hover:text-white hover:bg-zinc-800" title="Fechar" aria-label="Fechar prévia"><X className="w-4 h-4" /></button></div>
-        </div>
+    <div className={`fixed z-[70] transition-all duration-200 ${showPreview ? (expanded ? "inset-2 sm:inset-auto sm:bottom-24 sm:right-6 sm:w-[620px]" : "bottom-20 right-3 sm:bottom-24 sm:right-6 w-[calc(100vw-24px)] sm:w-[420px]") : "pointer-events-none opacity-0 -left-[9999px] -top-[9999px] w-px h-px"}`}>
+      <div className="rounded-2xl overflow-hidden bg-zinc-950 border border-zinc-700 shadow-2xl">
+        {showPreview && <div className="flex items-center justify-between h-11 px-3 border-b border-zinc-800 bg-zinc-900/95">
+          <div className="flex items-center gap-2 min-w-0"><Youtube className="w-4 h-4 text-red-500 shrink-0" /><span className="text-xs font-semibold text-zinc-200">Tocando agora</span></div>
+          <div className="flex items-center gap-1"><button onClick={() => setExpanded(v => !v)} className="w-8 h-8 rounded-lg flex items-center justify-center text-zinc-400 hover:text-white hover:bg-zinc-800" title={expanded ? "Reduzir" : "Expandir"}>{expanded ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}</button><button onClick={() => { setShowPreview(false); setExpanded(false); }} className="w-8 h-8 rounded-lg flex items-center justify-center text-zinc-400 hover:text-white hover:bg-zinc-800" title="Fechar"><X className="w-4 h-4" /></button></div>
+        </div>}
         <div className="w-full aspect-video bg-black flex items-center justify-center"><div id={containerId.current} className="w-full h-full" /></div>
-        <div className="px-3 py-2 text-[11px] text-zinc-500 border-t border-zinc-800">O áudio continua tocando mesmo com a prévia fechada.</div>
+        {showPreview && <div className="p-3 bg-zinc-950">
+          <div className="flex items-center gap-3"><div className="w-12 h-12 rounded-lg bg-zinc-800 flex items-center justify-center shrink-0"><Youtube className="w-5 h-5 text-red-500" /></div><div className="min-w-0 flex-1"><div className="text-sm font-bold text-white truncate">Música atual</div><div className="text-xs text-zinc-400 truncate">Reprodução pelo YouTube</div></div><button onClick={togglePlayback} className="w-10 h-10 rounded-full bg-white text-black flex items-center justify-center hover:scale-105 transition-transform" title={isPlaying ? "Pausar" : "Continuar"}>{isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current ml-0.5" />}</button><Volume2 className="w-4 h-4 text-zinc-500" /></div>
+          <div className="mt-2 text-[10px] text-zinc-500">O áudio continua tocando quando a janela é fechada.</div>
+        </div>}
       </div>
-    )}
+    </div>
 
-    {currentVideoId && !showPreview && <button onClick={() => setShowPreview(true)} className="fixed bottom-20 sm:bottom-24 right-3 sm:right-6 z-50 min-h-10 flex items-center gap-2 px-3.5 py-2 rounded-full bg-zinc-900/95 border border-zinc-700 text-xs font-semibold text-zinc-200 hover:text-white hover:border-red-500/60 shadow-xl backdrop-blur-md transition-all" title="Abrir prévia da música" aria-label="Abrir prévia da música"><Youtube className="w-4 h-4 text-red-500" /><span>Prévia</span></button>}
-
-    {!showPreview && <div className="fixed pointer-events-none opacity-0 -left-[9999px] -top-[9999px] w-1 h-1"><div id={containerId.current} /></div>}
-    {showPreview && <button onClick={() => setShowPreview(false)} className="sr-only" aria-label="Fechar prévia"><EyeOff /></button>}
+    {currentVideoId && !showPreview && <button onClick={() => setShowPreview(true)} className="fixed bottom-20 sm:bottom-24 right-3 sm:right-6 z-50 min-h-10 flex items-center gap-2 px-3.5 py-2 rounded-full bg-zinc-900/95 border border-zinc-700 text-xs font-semibold text-zinc-200 hover:text-white hover:border-red-500/60 shadow-xl backdrop-blur-md transition-all" title="Abrir player" aria-label="Abrir player"><Play className="w-4 h-4 text-emerald-400 fill-current" /><span>Player</span></button>}
   </>;
 });
