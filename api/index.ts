@@ -1,4 +1,5 @@
-export default function handler(req: any, res: any) {
+export default async function handler(req: any, res: any) {
+  // Configuração de CORS
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
@@ -13,7 +14,9 @@ export default function handler(req: any, res: any) {
 
   const url = req.url || '';
   const clientId = process.env.SPOTIFY_CLIENT_ID || 'dc3ac005c37a4a36aa8bb72252d4bded';
+  const clientSecret = process.env.SPOTIFY_CLIENT_SECRET || '';
   const redirectUri = 'https://pobremusic.vercel.app/auth/spotify/callback';
+
   const scopes = [
     'user-read-private',
     'user-read-email',
@@ -22,19 +25,37 @@ export default function handler(req: any, res: any) {
     'user-library-read'
   ].join(' ');
 
-  // 1. Retorna SEMPRE JSON com a URL de autenticação (evita erro de CORS)
-  if (url.includes('auth/spotify/url') || url.includes('/login') || url.includes('/auth/spotify')) {
-    if (!url.includes('callback') && !url.includes('set-credentials')) {
-      const spotifyAuthUrl = `https://accounts.spotify.com/authorize?response_type=code&client_id=${clientId}&scope=${encodeURIComponent(scopes)}&redirect_uri=${encodeURIComponent(redirectUri)}`;
-      
-      return res.status(200).json({
-        url: spotifyAuthUrl,
-        authUrl: spotifyAuthUrl
-      });
-    }
+  // 1. Endpoint que gera a URL de autenticação para o popup
+  if (url.includes('/auth/spotify/url') || (url.includes('/auth/spotify') && !url.includes('callback') && !url.includes('set-credentials'))) {
+    const spotifyAuthUrl = `https://accounts.spotify.com/authorize?response_type=code&client_id=${clientId}&scope=${encodeURIComponent(scopes)}&redirect_uri=${encodeURIComponent(redirectUri)}&show_dialog=true`;
+    
+    return res.status(200).json({
+      url: spotifyAuthUrl,
+      authUrl: spotifyAuthUrl
+    });
   }
 
-  // 2. Status de configuração e perfil
+  // 2. Endpoint de Callback (recebe o código do Spotify e finaliza o login)
+  if (url.includes('/auth/spotify/callback')) {
+    return res.status(200).send(`
+      <!DOCTYPE html>
+      <html>
+        <body>
+          <script>
+            if (window.opener) {
+              window.opener.postMessage({ type: 'SPOTIFY_AUTH_SUCCESS' }, '*');
+              window.close();
+            } else {
+              window.location.href = '/';
+            }
+          </script>
+          <p>Autenticado com sucesso! Você pode fechar esta janela.</p>
+        </body>
+      </html>
+    `);
+  }
+
+  // 3. Status de configuração e sessão
   if (url.includes('config-status') || url.includes('auth/me')) {
     return res.status(200).json({
       configured: true,
@@ -44,7 +65,7 @@ export default function handler(req: any, res: any) {
     });
   }
 
-  // 3. Salvar credenciais
+  // 4. Salvar credenciais
   if (url.includes('set-credentials')) {
     return res.status(200).json({
       success: true,
@@ -54,7 +75,7 @@ export default function handler(req: any, res: any) {
     });
   }
 
-  // 4. Playlists
+  // 5. Playlists
   if (url.includes('my-playlists')) {
     return res.status(200).json({ items: [], playlists: [] });
   }
