@@ -1,6 +1,14 @@
 import { PlaylistData, Track, TrackSearchResult } from "../types";
 import { PRESET_OPTIONS } from "../data/presetPlaylists";
 import { playlistLogger } from "./logger";
+import {
+  cachePlaylistMetadata,
+  getCachedPlaylist,
+  getLastPlayedPlaylist,
+  getCachedResolvedVideoId,
+  cacheResolvedVideoId,
+  searchOfflineStoredTracks,
+} from "./offlineStorage";
 
 // Production fallback hosts (when app is exported as APK, Capacitor, Cordova, file://, or static host)
 const DEV_RUN_BACKEND_URL = "https://pobremusic.vercel.app";
@@ -186,7 +194,24 @@ export async function searchMusicTracksClient(query: string): Promise<TrackSearc
     ];
   }
 
-  // 1. Try Backend API on candidate hosts
+  // 1. If offline, search in offline storage first
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    const offlineMatches = searchOfflineStoredTracks(trimmedQuery);
+    if (offlineMatches.length > 0) {
+      return offlineMatches.map((t) => ({
+        nome_musica: t.nome_musica,
+        nome_artista: t.nome_artista,
+        album: t.album || "Cache Offline",
+        duracao_ms: t.duracao_ms || 200000,
+        capa: t.capa || "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=300&auto=format&fit=crop&q=80",
+        videoId: t.videoId,
+        spotify_id: t.spotify_id,
+        origem: "offline_cache",
+      }));
+    }
+  }
+
+  // 2. Try Backend API on candidate hosts
   const candidateHosts = getCandidateBackendUrls();
   for (const host of candidateHosts) {
     try {
@@ -204,7 +229,7 @@ export async function searchMusicTracksClient(query: string): Promise<TrackSearc
     }
   }
 
-  // 2. Client-side Fallback: Free, fast, open CORS iTunes Search API
+  // 3. Client-side Fallback: Free, fast, open CORS iTunes Search API
   try {
     const itunesUrl = `https://itunes.apple.com/search?term=${encodeURIComponent(
       trimmedQuery
@@ -230,7 +255,22 @@ export async function searchMusicTracksClient(query: string): Promise<TrackSearc
     console.warn("iTunes search fallback notice:", itunesErr);
   }
 
-  // 3. Generic Custom Result based on query
+  // 4. Fallback to offline stored tracks if network failed
+  const offlineFallback = searchOfflineStoredTracks(trimmedQuery);
+  if (offlineFallback.length > 0) {
+    return offlineFallback.map((t) => ({
+      nome_musica: t.nome_musica,
+      nome_artista: t.nome_artista,
+      album: t.album || "Cache Offline",
+      duracao_ms: t.duracao_ms || 200000,
+      capa: t.capa || "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=300&auto=format&fit=crop&q=80",
+      videoId: t.videoId,
+      spotify_id: t.spotify_id,
+      origem: "offline_cache",
+    }));
+  }
+
+  // 5. Generic Custom Result based on query
   return [
     {
       nome_musica: trimmedQuery,
@@ -244,14 +284,23 @@ export async function searchMusicTracksClient(query: string): Promise<TrackSearc
 }
 
 /**
- * Robust Client YouTube Video ID Resolver
+ * Robust Client YouTube Video ID Resolver with offline cache lookup
  */
 export async function resolveYouTubeVideoIdClient(
   nomeMusica: string,
   nomeArtista: string,
   existingVideoId?: string
 ): Promise<string> {
-  if (existingVideoId) return existingVideoId;
+  if (existingVideoId) {
+    cacheResolvedVideoId(nomeMusica, nomeArtista, existingVideoId);
+    return existingVideoId;
+  }
+
+  // Check cached video ID first for instant offline/low-latency playback
+  const cachedId = getCachedResolvedVideoId(nomeMusica, nomeArtista);
+  if (cachedId) {
+    return cachedId;
+  }
 
   const query = `${nomeMusica} ${nomeArtista}`.trim();
 
@@ -267,6 +316,7 @@ export async function resolveYouTubeVideoIdClient(
       if (res.ok && contentType && contentType.includes("application/json")) {
         const data = await res.json();
         if (data.videoId) {
+          cacheResolvedVideoId(nomeMusica, nomeArtista, data.videoId);
           return data.videoId;
         }
       }
@@ -276,7 +326,6 @@ export async function resolveYouTubeVideoIdClient(
   }
 
   // 2. Direct Public Video Search Fallback
-  // Curated reliable matches for common hits
   const lowerQuery = query.toLowerCase();
   const popularMap: Record<string, string> = {
     "blinding lights": "4NRXx6U8ABQ",
@@ -296,11 +345,14 @@ export async function resolveYouTubeVideoIdClient(
 
   for (const [key, vid] of Object.entries(popularMap)) {
     if (lowerQuery.includes(key)) {
+      cacheResolvedVideoId(nomeMusica, nomeArtista, vid);
       return vid;
     }
   }
 
-  return "4NRXx6U8ABQ";
+  const defaultVid = "4NRXx6U8ABQ";
+  cacheResolvedVideoId(nomeMusica, nomeArtista, defaultVid);
+  return defaultVid;
 }
 
 /**
@@ -313,45 +365,61 @@ export async function fetchPlaylistSafe(
   const parsed = parseSpotifyInput(urlOrId);
   const cleanId = parsed.id || urlOrId.trim();
 
-  // 1. Check if user selected one of our instant local presets
-  if (PRESET_FALLBACK_TRACKS[cleanId]) {
-    return { data: PRESET_FALLBACK_TRACKS[cleanId] };
+  // 1. If device is currently offline, check offline storage first!
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    const cached = getCachedPlaylist(cleanId) || getCachedPlaylist(urlOrId);
+    if (cached && cached.faixas?.length > 0) {
+      return { data: cached };
+    }
+    const lastPlayed = getLastPlayedPlaylist();
+    if (lastPlayed && lastPlayed.faixas?.length > 0) {
+      return { data: lastPlayed };
+    }
   }
 
-  // 2. Check if cleanId matches one of preset options
+  // 2. Check if user selected one of our instant local presets
+  if (PRESET_FALLBACK_TRACKS[cleanId]) {
+    const presetData = PRESET_FALLBACK_TRACKS[cleanId];
+    cachePlaylistMetadata(presetData);
+    return { data: presetData };
+  }
+
+  // 3. Check if cleanId matches one of preset options
   const matchingPreset = PRESET_OPTIONS.find(
     (p) => p.id === cleanId || p.spotifyUrlOrId === cleanId || p.name.toLowerCase() === urlOrId.toLowerCase()
   );
   if (matchingPreset && PRESET_FALLBACK_TRACKS[matchingPreset.id]) {
-    return { data: PRESET_FALLBACK_TRACKS[matchingPreset.id] };
+    const presetData = PRESET_FALLBACK_TRACKS[matchingPreset.id];
+    cachePlaylistMetadata(presetData);
+    return { data: presetData };
   }
 
-  // 3. Direct YouTube link pasted into playlist input
+  // 4. Direct YouTube link pasted into playlist input
   const directYtId = extractYouTubeVideoId(urlOrId);
   if (directYtId) {
-    return {
-      data: {
-        sucesso: true,
-        playlist_id: directYtId,
-        nome_playlist: "Música do YouTube",
-        descricao: "Reproduzindo link direto do YouTube",
-        capa_playlist: `https://img.youtube.com/vi/${directYtId}/hqdefault.jpg`,
-        total_faixas: 1,
-        faixas: [
-          {
-            nome_musica: "Vídeo do YouTube",
-            nome_artista: "YouTube Direto",
-            album: "YouTube Audio",
-            duracao_ms: 210000,
-            capa: `https://img.youtube.com/vi/${directYtId}/hqdefault.jpg`,
-            videoId: directYtId,
-          },
-        ],
-      },
+    const ytData: PlaylistData = {
+      sucesso: true,
+      playlist_id: directYtId,
+      nome_playlist: "Música do YouTube",
+      descricao: "Reproduzindo link direto do YouTube",
+      capa_playlist: `https://img.youtube.com/vi/${directYtId}/hqdefault.jpg`,
+      total_faixas: 1,
+      faixas: [
+        {
+          nome_musica: "Vídeo do YouTube",
+          nome_artista: "YouTube Direto",
+          album: "YouTube Audio",
+          duracao_ms: 210000,
+          capa: `https://img.youtube.com/vi/${directYtId}/hqdefault.jpg`,
+          videoId: directYtId,
+        },
+      ],
     };
+    cachePlaylistMetadata(ytData);
+    return { data: ytData };
   }
 
-  // 4. Try Backend /api/spotify-playlist on all candidate backend hosts
+  // 5. Try Backend /api/spotify-playlist on all candidate backend hosts
   const headers: Record<string, string> = {};
   const token = manualSpotifyToken || localStorage.getItem("spotifyTokenManual") || localStorage.getItem("spotifyTokenManuaL");
   if (token) {
@@ -407,18 +475,19 @@ export async function fetchPlaylistSafe(
             videoId: t.videoId,
             spotify_id: t.spotify_id || t.id,
           }));
-          return {
-            data: {
-              sucesso: true,
-              playlist_id: cleanId,
-              nome_playlist: "Playlist Spotify",
-              descricao: "Playlist sincronizada via link do Spotify.",
-              capa_playlist: formattedFaixas[0]?.capa || "",
-              total_faixas: formattedFaixas.length,
-              faixas: formattedFaixas,
-            },
+          const playlistPayload: PlaylistData = {
+            sucesso: true,
+            playlist_id: cleanId,
+            nome_playlist: "Playlist Spotify",
+            descricao: "Playlist sincronizada via link do Spotify.",
+            capa_playlist: formattedFaixas[0]?.capa || "",
+            total_faixas: formattedFaixas.length,
+            faixas: formattedFaixas,
           };
+          cachePlaylistMetadata(playlistPayload);
+          return { data: playlistPayload };
         } else if (data.sucesso && Array.isArray(data.faixas) && data.faixas.length > 0) {
+          cachePlaylistMetadata(data);
           return { data };
         }
       }
@@ -439,7 +508,7 @@ export async function fetchPlaylistSafe(
     }
   }
 
-  // 5. Client-side Direct Spotify Web API (if user has token in browser)
+  // 6. Client-side Direct Spotify Web API (if user has token in browser)
   if (token && cleanId) {
     try {
       const endpoint = parsed.type === "album" 
@@ -464,26 +533,26 @@ export async function fetchPlaylistSafe(
             capa: spotifyData.album?.images?.[0]?.url || "",
             spotify_id: spotifyData.id,
           };
-          return {
-            data: {
-              sucesso: true,
-              playlist_id: spotifyData.id,
-              nome_playlist: spotifyData.name,
-              descricao: `Faixa por ${(spotifyData.artists || []).map((a: any) => a.name).join(", ")}`,
-              capa_playlist: trackItem.capa,
-              total_faixas: 1,
-              faixas: [trackItem],
-            },
+          const singleTrackPlaylist: PlaylistData = {
+            sucesso: true,
+            playlist_id: spotifyData.id,
+            nome_playlist: spotifyData.name,
+            descricao: `Faixa por ${(spotifyData.artists || []).map((a: any) => a.name).join(", ")}`,
+            capa_playlist: trackItem.capa,
+            total_faixas: 1,
+            faixas: [trackItem],
           };
+          cachePlaylistMetadata(singleTrackPlaylist);
+          return { data: singleTrackPlaylist };
         }
 
         const rawItems = Array.isArray(spotifyData.items)
-  ? spotifyData.items
-  : Array.isArray(spotifyData.items?.items)
-    ? spotifyData.items.items
-    : Array.isArray(spotifyData.tracks?.items)
-      ? spotifyData.tracks.items
-      : [];
+          ? spotifyData.items
+          : Array.isArray(spotifyData.items?.items)
+            ? spotifyData.items.items
+            : Array.isArray(spotifyData.tracks?.items)
+              ? spotifyData.tracks.items
+              : [];
         const faixas: Track[] = rawItems
           .map((item: any) => {
             const tr = item.track || item;
@@ -500,17 +569,17 @@ export async function fetchPlaylistSafe(
           .filter(Boolean) as Track[];
 
         if (faixas.length > 0) {
-          return {
-            data: {
-              sucesso: true,
-              playlist_id: spotifyData.id,
-              nome_playlist: spotifyData.name || "Playlist Spotify",
-              descricao: spotifyData.description || "",
-              capa_playlist: spotifyData.images?.[0]?.url || "",
-              total_faixas: faixas.length,
-              faixas,
-            },
+          const loadedData: PlaylistData = {
+            sucesso: true,
+            playlist_id: spotifyData.id,
+            nome_playlist: spotifyData.name || "Playlist Spotify",
+            descricao: spotifyData.description || "",
+            capa_playlist: spotifyData.images?.[0]?.url || "",
+            total_faixas: faixas.length,
+            faixas,
           };
+          cachePlaylistMetadata(loadedData);
+          return { data: loadedData };
         }
       }
     } catch (spotifyErr) {
@@ -518,7 +587,7 @@ export async function fetchPlaylistSafe(
     }
   }
 
-  // 6. Direct Client-Side Spotify oEmbed resolution (Public CORS endpoint)
+  // 7. Direct Client-Side Spotify oEmbed resolution (Public CORS endpoint)
   if (urlOrId.includes("spotify.com") || urlOrId.startsWith("spotify:")) {
     try {
       const canonicalSpotifyUrl = urlOrId.startsWith("http")
@@ -546,17 +615,17 @@ export async function fetchPlaylistSafe(
             videoId,
             spotify_id: cleanId,
           };
-          return {
-            data: {
-              sucesso: true,
-              playlist_id: cleanId,
-              nome_playlist: oembedTitle,
-              descricao: `Faixa obtida do Spotify`,
-              capa_playlist: oembedThumbnail,
-              total_faixas: 1,
-              faixas: [trackItem],
-            },
+          const singlePlaylist: PlaylistData = {
+            sucesso: true,
+            playlist_id: cleanId,
+            nome_playlist: oembedTitle,
+            descricao: `Faixa obtida do Spotify`,
+            capa_playlist: oembedThumbnail,
+            total_faixas: 1,
+            faixas: [trackItem],
           };
+          cachePlaylistMetadata(singlePlaylist);
+          return { data: singlePlaylist };
         }
       }
     } catch (oembedErr) {
@@ -564,7 +633,13 @@ export async function fetchPlaylistSafe(
     }
   }
 
-  // 7. If this was a Spotify link/URI/ID or any playlist URL and tracks could not be loaded, return clean error
+  // 8. If network failed or online queries yielded no result, check offline cache for this playlist before failing!
+  const cachedOffline = getCachedPlaylist(cleanId) || getCachedPlaylist(urlOrId);
+  if (cachedOffline && cachedOffline.faixas?.length > 0) {
+    return { data: cachedOffline };
+  }
+
+  // 9. If this was a Spotify link/URI/ID or any playlist URL and tracks could not be loaded, return clean error
   const isLikelyResource = urlOrId.includes("spotify.com") || urlOrId.startsWith("spotify:") || urlOrId.startsWith("http") || (cleanId.length >= 10 && !urlOrId.includes(" "));
   if (isLikelyResource) {
     return {
@@ -580,7 +655,7 @@ export async function fetchPlaylistSafe(
     };
   }
 
-  // 7. If user entered a plain text search query (e.g. "rock 80s")
+  // 10. If user entered a plain text search query (e.g. "rock 80s")
   if (cleanId && cleanId.length > 2) {
     try {
       const directSearchTracks = await searchMusicTracksClient(urlOrId.trim());
@@ -595,24 +670,30 @@ export async function fetchPlaylistSafe(
           spotify_id: t.spotify_id,
         }));
 
-        return {
-          data: {
-            sucesso: true,
-            playlist_id: cleanId,
-            nome_playlist: urlOrId.trim().replace(/^https?:\/\/[^\/]+\//, ""),
-            descricao: "Músicas localizadas via busca.",
-            capa_playlist: faixas[0]?.capa || "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600&auto=format&fit=crop&q=80",
-            total_faixas: faixas.length,
-            faixas,
-          },
+        const searchPlaylist: PlaylistData = {
+          sucesso: true,
+          playlist_id: cleanId,
+          nome_playlist: urlOrId.trim().replace(/^https?:\/\/[^\/]+\//, ""),
+          descricao: "Músicas localizadas via busca.",
+          capa_playlist: faixas[0]?.capa || "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600&auto=format&fit=crop&q=80",
+          total_faixas: faixas.length,
+          faixas,
         };
+        cachePlaylistMetadata(searchPlaylist);
+        return { data: searchPlaylist };
       }
     } catch (searchErr) {
       console.warn("Search notice:", searchErr);
     }
   }
 
-  // 8. Clean error if nothing could be resolved (no random songs)
+  // 11. Final fallback to Last Played Playlist if everything else fails
+  const lastPlayedFallback = getLastPlayedPlaylist();
+  if (lastPlayedFallback && lastPlayedFallback.faixas?.length > 0) {
+    return { data: lastPlayedFallback };
+  }
+
+  // 12. Clean error if nothing could be resolved
   return {
     data: {
       sucesso: false,

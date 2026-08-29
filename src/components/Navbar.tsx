@@ -13,7 +13,9 @@ import {
   Plus,
   BookmarkCheck,
   Disc3,
-  UserCheck
+  UserCheck,
+  WifiOff,
+  HardDrive
 } from "lucide-react";
 import { ConfigStatus, SpotifyUser, GoogleUserProfile } from "../types";
 import { PobreMusicLogo } from "./PobreMusicLogo";
@@ -32,6 +34,8 @@ interface NavbarProps {
   onToggleMiniPlayer?: () => void;
   onOpenEqualizerModal?: () => void;
   onOpenMobileDownload?: () => void;
+  onOpenOfflineModal?: () => void;
+  isOffline?: boolean;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -48,6 +52,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   onToggleMiniPlayer,
   onOpenEqualizerModal,
   onOpenMobileDownload,
+  onOpenOfflineModal,
+  isOffline = false,
 }) => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
@@ -218,6 +224,32 @@ export const Navbar: React.FC<NavbarProps> = ({
               </button>
             )}
 
+            {/* Offline Cache & Service Worker Button */}
+            {onOpenOfflineModal && (
+              <button
+                id="btn-navbar-offline-cache"
+                onClick={onOpenOfflineModal}
+                className={`min-h-[38px] flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold transition-all shadow-sm ${
+                  isOffline
+                    ? "bg-amber-500/20 text-amber-300 border-amber-500/40 hover:bg-amber-500/30"
+                    : "bg-zinc-900 hover:bg-zinc-800 border-zinc-700/80 text-zinc-200 hover:text-white hover:border-emerald-500/50"
+                }`}
+                title={isOffline ? "Você está no Modo Offline. Clique para ver músicas salvas" : "Ver Cache Offline & Service Worker"}
+              >
+                {isOffline ? (
+                  <>
+                    <WifiOff className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
+                    <span className="text-amber-300">Offline</span>
+                  </>
+                ) : (
+                  <>
+                    <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Cache Offline</span>
+                  </>
+                )}
+              </button>
+            )}
+
             {/* Config & Instructions Button */}
             <button
               id="btn-open-config-guide"
@@ -232,6 +264,17 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           {/* Mobile Right Controls (<md) - Clean & Compact */}
           <div className="flex md:hidden items-center gap-1.5">
+            {/* Offline Badge on Mobile */}
+            {isOffline && (
+              <button
+                onClick={onOpenOfflineModal}
+                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-500/20 border border-amber-500/40 text-[11px] font-bold text-amber-300 animate-pulse"
+                title="Modo Offline"
+              >
+                <WifiOff className="w-3.5 h-3.5 text-amber-400" />
+                <span>Offline</span>
+              </button>
+            )}
             {/* Google Quick Status Badge on Mobile */}
             {googleUser ? (
               <div 
@@ -489,6 +532,35 @@ export const Navbar: React.FC<NavbarProps> = ({
                       </p>
                       <p className="text-[10px] text-zinc-400">
                         Janela compacta flutuante
+                      </p>
+                    </div>
+                  </button>
+                )}
+
+                {/* Offline Cache & Service Worker */}
+                {onOpenOfflineModal && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onOpenOfflineModal();
+                      setIsMobileMenuOpen(false);
+                    }}
+                    className="w-full p-2.5 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-800 flex items-center gap-2.5 text-left transition-all group"
+                  >
+                    <div className={`p-1.5 rounded-lg ${isOffline ? 'bg-amber-500/10 text-amber-400' : 'bg-emerald-500/10 text-emerald-400'}`}>
+                      {isOffline ? <WifiOff className="w-4 h-4" /> : <HardDrive className="w-4 h-4" />}
+                    </div>
+                    <div>
+                      <p className="text-xs font-bold text-white group-hover:text-emerald-300 flex items-center gap-2">
+                        <span>Cache Offline & SW</span>
+                        {isOffline && (
+                          <span className="px-1.5 py-0.2 text-[9px] font-bold rounded bg-amber-500/20 text-amber-300">
+                            Offline
+                          </span>
+                        )}
+                      </p>
+                      <p className="text-[10px] text-zinc-400">
+                        Músicas e playlists salvas no dispositivo
                       </p>
                     </div>
                   </button>
