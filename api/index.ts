@@ -27,13 +27,13 @@ export default async function handler(req: any, res: any) {
     'user-read-recently-played'
   ].join(' ');
 
-  // 1. Gera URL de login do Spotify
+  // 1. Gera a URL do Spotify
   if (url.includes('/auth/spotify/url') || (url.includes('/auth/spotify') && !url.includes('callback') && !url.includes('set-credentials'))) {
     const spotifyAuthUrl = `https://accounts.spotify.com/authorize?response_type=code&client_id=${clientId}&scope=${encodeURIComponent(scopes)}&redirect_uri=${encodeURIComponent(redirectUri)}&show_dialog=true`;
     return res.status(200).json({ url: spotifyAuthUrl, authUrl: spotifyAuthUrl });
   }
 
-  // 2. Callback de autenticação com dados reais
+  // 2. Callback: recebe o código do Spotify, pega o token real e redireciona para a raiz gravando os dados
   if (url.includes('/auth/spotify/callback') || url.includes('/callback')) {
     const urlParams = new URL(req.url, `https://${req.headers.host || 'pobremusic.vercel.app'}`);
     const code = urlParams.searchParams.get('code');
@@ -67,6 +67,7 @@ export default async function handler(req: any, res: any) {
       });
       const userData = await userResponse.json();
 
+      // Grava diretamente no localStorage e redireciona a página inteira, contornando qualquer bloqueio de COOP/popup
       return res.status(200).send(`
         <!DOCTYPE html>
         <html>
@@ -74,24 +75,30 @@ export default async function handler(req: any, res: any) {
           <body style="background:#121212;color:#1DB954;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;">
             <div style="text-align:center;">
               <h2>Conectado como ${userData.display_name || 'Usuário'}!</h2>
-              <p style="color:#fff;">Carregando suas músicas...</p>
+              <p style="color:#fff;">Redirecionando para suas músicas...</p>
             </div>
             <script>
-              const payload = {
-                type: 'SPOTIFY_AUTH_SUCCESS',
-                accessToken: ${JSON.stringify(tokenData.access_token)},
-                refreshToken: ${JSON.stringify(tokenData.refresh_token || null)},
-                expiresIn: ${JSON.stringify(tokenData.expires_in)},
-                user: ${JSON.stringify(userData)}
-              };
-              if (window.opener) {
-                window.opener.postMessage(payload, '*');
-                setTimeout(() => window.close(), 1000);
-              } else {
-                localStorage.setItem('spotify_token', payload.accessToken);
-                localStorage.setItem('spotify_user', JSON.stringify(payload.user));
-                window.location.href = '/';
-              }
+              const token = ${JSON.stringify(tokenData.access_token)};
+              const user = ${JSON.stringify(userData)};
+              
+              localStorage.setItem('spotify_token', token);
+              localStorage.setItem('spotify_access_token', token);
+              localStorage.setItem('spotify_user', JSON.stringify(user));
+              localStorage.setItem('spotify_client_id', ${JSON.stringify(clientId)});
+
+              try {
+                if (window.opener) {
+                  window.opener.postMessage({ type: 'SPOTIFY_AUTH_SUCCESS', accessToken: token, user: user }, '*');
+                }
+              } catch(e) {}
+
+              setTimeout(() => {
+                if (window.opener) {
+                  window.close();
+                } else {
+                  window.location.href = '/';
+                }
+              }, 1000);
             </script>
           </body>
         </html>
@@ -101,7 +108,7 @@ export default async function handler(req: any, res: any) {
     }
   }
 
-  // 3. Status de Configuração (força todas as flags como verdadeiras)
+  // 3. Status de Configuração
   if (url.includes('config-status') || url.includes('status')) {
     return res.status(200).json({
       configured: true,
@@ -142,7 +149,7 @@ export default async function handler(req: any, res: any) {
     return res.status(200).json({ authenticated: false, user: null });
   }
 
-  // 6. Playlists Reais do Usuário
+  // 6. Playlists
   if (url.includes('my-playlists') || url.includes('playlists')) {
     const authHeader = req.headers.authorization || '';
     if (authHeader.startsWith('Bearer ')) {
