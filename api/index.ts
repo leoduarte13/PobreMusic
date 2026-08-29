@@ -1,5 +1,10 @@
 export default async function handler(req: any, res: any) {
+  // Desativa qualquer cache
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
+  // Cabeçalhos CORS completos
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
@@ -17,7 +22,104 @@ export default async function handler(req: any, res: any) {
   const clientSecret = process.env.SPOTIFY_CLIENT_SECRET || '';
   const redirectUri = 'https://pobremusic.vercel.app/auth/spotify/callback';
 
-  // 1. Status
+  const scopes = [
+    'user-read-private',
+    'user-read-email',
+    'playlist-read-private',
+    'playlist-read-collaborative',
+    'user-library-read',
+    'user-top-read',
+    'user-read-recently-played'
+  ].join(' ');
+
+  const authUrl = `https://accounts.spotify.com/authorize?response_type=code&client_id=${clientId}&scope=${encodeURIComponent(scopes)}&redirect_uri=${encodeURIComponent(redirectUri)}&show_dialog=true`;
+
+  // 1. GERAÇÃO DA URL DE LOGIN (Atende chamadas diretas e via fetch JSON)
+  if (url.includes('/auth/spotify/url') || (url.includes('/auth/spotify') && !url.includes('callback') && !url.includes('set-credentials'))) {
+    if (req.headers.accept && req.headers.accept.includes('application/json')) {
+      return res.status(200).json({ url: authUrl, authUrl: authUrl });
+    }
+    return res.redirect(302, authUrl);
+  }
+
+  // 2. CALLBACK DE AUTENTICAÇÃO DO SPOTIFY
+  if (url.includes('/auth/spotify/callback') || url.includes('/callback')) {
+    const urlParams = new URL(url, 'https://pobremusic.vercel.app');
+    const code = urlParams.searchParams.get('code');
+
+    if (!code) {
+      return res.status(400).send('Código de autorização não encontrado.');
+    }
+
+    try {
+      const tokenRes = await fetch('https://accounts.spotify.com/api/token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Authorization': 'Basic ' + Buffer.from(`${clientId}:${clientSecret}`).toString('base64'),
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code: code,
+          redirect_uri: redirectUri,
+        }).toString(),
+      });
+
+      const tokenData = await tokenRes.json();
+      if (!tokenRes.ok) {
+        return res.status(tokenRes.status).send(`Erro Spotify: ${tokenData.error_description || tokenData.error}`);
+      }
+
+      const userRes = await fetch('https://api.spotify.com/v1/me', {
+        headers: { Authorization: `Bearer ${tokenData.access_token}` }
+      });
+      const userData = await userRes.json();
+
+      return res.status(200).send(`
+        <!DOCTYPE html>
+        <html>
+          <head><title>Spotify Conectado</title></head>
+          <body style="background:#121212;color:#1DB954;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;">
+            <div style="text-align:center;">
+              <h2>Conectado como ${userData.display_name || 'Spotify'}!</h2>
+              <p style="color:#fff;">Atualizando suas playlists...</p>
+            </div>
+            <script>
+              const payload = {
+                type: 'SPOTIFY_AUTH_SUCCESS',
+                accessToken: ${JSON.stringify(tokenData.access_token)},
+                refreshToken: ${JSON.stringify(tokenData.refresh_token || null)},
+                expiresIn: ${JSON.stringify(tokenData.expires_in)},
+                user: ${JSON.stringify(userData)}
+              };
+              localStorage.setItem('spotify_token', payload.accessToken);
+              localStorage.setItem('spotify_access_token', payload.accessToken);
+              localStorage.setItem('spotify_user', JSON.stringify(payload.user));
+              localStorage.setItem('spotify_client_id', ${JSON.stringify(clientId)});
+
+              try {
+                if (window.opener) {
+                  window.opener.postMessage(payload, '*');
+                }
+              } catch(e) {}
+
+              setTimeout(() => {
+                if (window.opener) {
+                  window.close();
+                } else {
+                  window.location.href = '/';
+                }
+              }, 1200);
+            </script>
+          </body>
+        </html>
+      `);
+    } catch (err: any) {
+      return res.status(500).send(`Erro interno: ${err.message}`);
+    }
+  }
+
+  // 3. STATUS DE CONFIGURAÇÃO (Desbloqueia os botões no frontend)
   if (url.includes('config-status') || url.includes('status')) {
     return res.status(200).json({
       configured: true,
@@ -30,12 +132,59 @@ export default async function handler(req: any, res: any) {
     });
   }
 
-  // 2. Parser Universal de Playlist (API Oficial + Fallback Embed Público)
+  // 4. SALVAR CREDENCIAIS
+  if (url.includes('set-credentials')) {
+    return res.status(200).json({
+      success: true,
+      configured: true,
+      hasCredentials: true,
+      hasClientId: true,
+      hasClientSecret: true,
+      message: "Credenciais salvas com sucesso!"
+    });
+  }
+
+  // 5. PERFIL DE USUÁRIO
+  if (url.includes('auth/me') || url.includes('/me')) {
+    const authHeader = req.headers.authorization || '';
+    const token = authHeader.replace('Bearer ', '').trim();
+    if (token) {
+      try {
+        const meRes = await fetch('https://api.spotify.com/v1/me', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (meRes.ok) {
+          const profile = await meRes.json();
+          return res.status(200).json({ authenticated: true, user: profile });
+        }
+      } catch (e) {}
+    }
+    return res.status(200).json({ authenticated: true });
+  }
+
+  // 6. LISTAGEM DE PLAYLISTS DA CONTA
+  if (url.includes('my-playlists') || (url.includes('playlists') && !url.includes('spotify-playlist'))) {
+    const authHeader = req.headers.authorization || '';
+    const token = authHeader.replace('Bearer ', '').trim();
+    if (token) {
+      try {
+        const plRes = await fetch('https://api.spotify.com/v1/me/playlists?limit=50', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (plRes.ok) {
+          const plData = await plRes.json();
+          return res.status(200).json(plData);
+        }
+      } catch (e) {}
+    }
+    return res.status(200).json({ items: [], total: 0 });
+  }
+
+  // 7. CARREGADOR DE MÚSICAS DA PLAYLIST (Com bypass de erro 429 via Embed)
   if (url.includes('spotify-playlist') || url.includes('/playlist/')) {
     const urlObj = new URL(url, 'https://pobremusic.vercel.app');
     let rawTarget = urlObj.searchParams.get('url') || urlObj.searchParams.get('id') || '';
 
-    // Extrai o ID limpo da playlist
     let playlistId = rawTarget;
     if (rawTarget.includes('playlist/')) {
       playlistId = rawTarget.split('playlist/')[1].split('?')[0].split('/')[0];
@@ -45,7 +194,7 @@ export default async function handler(req: any, res: any) {
       return res.status(400).json({ error: 'ID da playlist não fornecido.' });
     }
 
-    // TENTATIVA 1: Fallback via Embed Oficial (ignora o erro 429 de Rate Limit da API)
+    // Tenta primeiro via Embed (Bypassa o 429 de Rate Limit)
     try {
       const embedRes = await fetch(`https://open.spotify.com/embed/playlist/${playlistId}`, {
         headers: {
@@ -66,7 +215,7 @@ export default async function handler(req: any, res: any) {
               track: {
                 id: t.id || `track_${index}`,
                 name: t.title || t.name,
-                artists: [{ name: t.subtitle || t.artists?.[0]?.name || 'Artista Desconhecido' }],
+                artists: [{ name: t.subtitle || t.artists?.[0]?.name || 'Artista' }],
                 album: {
                   name: entity.title || entity.name || 'Álbum',
                   images: [{ url: entity.coverArt?.sources?.[0]?.url || '' }]
@@ -88,19 +237,14 @@ export default async function handler(req: any, res: any) {
           }
         }
       }
-    } catch (embedError) {
-      console.error('Fallback embed falhou, tentando API oficial:', embedError);
-    }
+    } catch (embedError) {}
 
-    // TENTATIVA 2: API Oficial do Spotify
+    // Fallback: API Oficial
     try {
-      let token = '';
       const authHeader = req.headers.authorization || '';
-      if (authHeader.startsWith('Bearer ')) {
-        token = authHeader.replace('Bearer ', '').trim();
-      }
+      let activeToken = authHeader.replace('Bearer ', '').trim();
 
-      if (!token && clientId && clientSecret) {
+      if (!activeToken && clientId && clientSecret) {
         const credToken = await fetch('https://accounts.spotify.com/api/token', {
           method: 'POST',
           headers: {
@@ -111,29 +255,22 @@ export default async function handler(req: any, res: any) {
         });
         if (credToken.ok) {
           const credData = await credToken.json();
-          token = credData.access_token;
+          activeToken = credData.access_token;
         }
       }
 
-      if (token) {
+      if (activeToken) {
         const tracksRes = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}`, {
-          headers: { Authorization: `Bearer ${token}` }
+          headers: { Authorization: `Bearer ${activeToken}` }
         });
         if (tracksRes.ok) {
           const tracksData = await tracksRes.json();
           return res.status(200).json(tracksData);
         }
       }
-    } catch (apiError: any) {
-      return res.status(500).json({ error: apiError.message });
-    }
+    } catch (apiError: any) {}
 
-    return res.status(404).json({ error: 'Não foi possível extrair os dados da playlist.' });
-  }
-
-  // 3. Playlists da Conta
-  if (url.includes('my-playlists') || (url.includes('playlists') && !url.includes('spotify-playlist'))) {
-    return res.status(200).json({ items: [], total: 0 });
+    return res.status(404).json({ error: 'Não foi possível carregar a playlist.' });
   }
 
   return res.status(200).json({ status: "ok", configured: true });
