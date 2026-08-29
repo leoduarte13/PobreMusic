@@ -149,20 +149,21 @@ export default async function handler(req: any, res: any) {
     return res.status(200).json({ authenticated: false, user: null });
   }
 
-  // 6. Playlists
+  // 6. Busca e formatação das Playlists
   if (url.includes('my-playlists') || url.includes('playlists')) {
     const authHeader = req.headers.authorization || '';
-    if (authHeader.startsWith('Bearer ')) {
-      const token = authHeader.split(' ')[1];
+    const token = authHeader.replace('Bearer ', '').trim();
+    if (token) {
       const plRes = await fetch('https://api.spotify.com/v1/me/playlists?limit=50', {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (plRes.ok) {
         const plData = await plRes.json();
-        return res.status(200).json(plData);
+        // Retorna tanto o array direto quanto a chave items para cobrir os dois formatos do frontend
+        return res.status(200).json(plData.items ? plData.items : plData);
       }
     }
-    return res.status(200).json({ items: [], playlists: [] });
+    return res.status(200).json([]);
   }
 
   return res.status(200).json({
