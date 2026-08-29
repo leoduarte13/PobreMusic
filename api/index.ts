@@ -303,7 +303,10 @@ if (
     const playlist = await playlistRes.json();
 
     // Spotify 2026: /items, não /tracks
-    const itemsRes = await fetch(
+    const allItems = await getAllPlaylistItems(
+  playlistId,
+  token
+);(
       `https://api.spotify.com/v1/playlists/${encodeURIComponent(
         playlistId
       )}/items?limit=50&market=BR`,
