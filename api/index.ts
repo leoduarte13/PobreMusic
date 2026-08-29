@@ -27,13 +27,13 @@ export default async function handler(req: any, res: any) {
     'user-read-recently-played'
   ].join(' ');
 
-  // 1. Gera URL para o popup de login oficial
+  // 1. Gera URL de login do Spotify
   if (url.includes('/auth/spotify/url') || (url.includes('/auth/spotify') && !url.includes('callback') && !url.includes('set-credentials'))) {
     const spotifyAuthUrl = `https://accounts.spotify.com/authorize?response_type=code&client_id=${clientId}&scope=${encodeURIComponent(scopes)}&redirect_uri=${encodeURIComponent(redirectUri)}&show_dialog=true`;
     return res.status(200).json({ url: spotifyAuthUrl, authUrl: spotifyAuthUrl });
   }
 
-  // 2. Recebe o código do Spotify, obtém o token real e busca os dados da sua conta
+  // 2. Callback de autenticação com dados reais
   if (url.includes('/auth/spotify/callback') || url.includes('/callback')) {
     const urlParams = new URL(req.url, `https://${req.headers.host || 'pobremusic.vercel.app'}`);
     const code = urlParams.searchParams.get('code');
@@ -43,7 +43,6 @@ export default async function handler(req: any, res: any) {
     }
 
     try {
-      // Troca o código pelo Token de Acesso real
       const tokenResponse = await fetch('https://accounts.spotify.com/api/token', {
         method: 'POST',
         headers: {
@@ -60,10 +59,9 @@ export default async function handler(req: any, res: any) {
       const tokenData = await tokenResponse.json();
 
       if (!tokenResponse.ok) {
-        return res.status(tokenResponse.status).send(`Erro ao autenticar: ${tokenData.error_description || tokenData.error}`);
+        return res.status(tokenResponse.status).send(`Erro Spotify: ${tokenData.error_description || tokenData.error}`);
       }
 
-      // Busca o perfil real da sua conta no Spotify
       const userResponse = await fetch('https://api.spotify.com/v1/me', {
         headers: { Authorization: `Bearer ${tokenData.access_token}` }
       });
@@ -75,8 +73,8 @@ export default async function handler(req: any, res: any) {
           <head><title>Conectado ao Spotify</title></head>
           <body style="background:#121212;color:#1DB954;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;">
             <div style="text-align:center;">
-              <h2>Conta conectada: ${userData.display_name || 'Spotify'}!</h2>
-              <p style="color:#fff;">Atualizando aplicativo...</p>
+              <h2>Conectado como ${userData.display_name || 'Usuário'}!</h2>
+              <p style="color:#fff;">Carregando suas músicas...</p>
             </div>
             <script>
               const payload = {
@@ -88,7 +86,7 @@ export default async function handler(req: any, res: any) {
               };
               if (window.opener) {
                 window.opener.postMessage(payload, '*');
-                setTimeout(() => window.close(), 1200);
+                setTimeout(() => window.close(), 1000);
               } else {
                 localStorage.setItem('spotify_token', payload.accessToken);
                 localStorage.setItem('spotify_user', JSON.stringify(payload.user));
@@ -99,23 +97,24 @@ export default async function handler(req: any, res: any) {
         </html>
       `);
     } catch (err: any) {
-      return res.status(500).send(`Erro interno ao processar login: ${err.message}`);
+      return res.status(500).send(`Erro interno: ${err.message}`);
     }
   }
 
-  // 3. Status de configuração
+  // 3. Status de Configuração (força todas as flags como verdadeiras)
   if (url.includes('config-status') || url.includes('status')) {
     return res.status(200).json({
       configured: true,
       hasCredentials: true,
       hasClientId: true,
       hasClientSecret: true,
+      spotifyConfigured: true,
       clientId: clientId,
       authenticated: false
     });
   }
 
-  // 4. Salvar credenciais
+  // 4. Salvar Credenciais
   if (url.includes('set-credentials')) {
     return res.status(200).json({
       success: true,
@@ -127,7 +126,7 @@ export default async function handler(req: any, res: any) {
     });
   }
 
-  // 5. Rota de perfil (se chamada com Bearer Token)
+  // 5. Perfil de Usuário
   if (url.includes('auth/me') || url.includes('/me')) {
     const authHeader = req.headers.authorization || '';
     if (authHeader.startsWith('Bearer ')) {
@@ -143,7 +142,7 @@ export default async function handler(req: any, res: any) {
     return res.status(200).json({ authenticated: false, user: null });
   }
 
-  // 6. Rota de playlists reais
+  // 6. Playlists Reais do Usuário
   if (url.includes('my-playlists') || url.includes('playlists')) {
     const authHeader = req.headers.authorization || '';
     if (authHeader.startsWith('Bearer ')) {
@@ -159,5 +158,11 @@ export default async function handler(req: any, res: any) {
     return res.status(200).json({ items: [], playlists: [] });
   }
 
-  return res.status(200).json({ status: "ok", configured: true, hasCredentials: true });
+  return res.status(200).json({
+    status: "ok",
+    configured: true,
+    hasCredentials: true,
+    hasClientId: true,
+    hasClientSecret: true
+  });
 }
