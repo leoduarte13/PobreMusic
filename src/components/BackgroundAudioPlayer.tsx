@@ -8,7 +8,7 @@ export interface BackgroundAudioPlayerRef {
   setVolume: (volume: number) => void;
   getCurrentTime: () => number;
   getDuration: () => number;
-  loadAudio: (url: string) => void;
+  loadAudio: (url: string, autoplay?: boolean) => void;
 }
 
 interface Props {
@@ -23,17 +23,25 @@ interface Props {
 const BackgroundAudioPlayer = forwardRef<BackgroundAudioPlayerRef, Props>(function BackgroundAudioPlayer({ track, volume, onStatusChange, onTimeUpdate, onEnded, onError }, ref) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const callbacks = useRef({ onStatusChange, onTimeUpdate, onEnded, onError });
-  const requestId = useRef(0);
+  const requestedPlay = useRef(false);
   useEffect(() => { callbacks.current = { onStatusChange, onTimeUpdate, onEnded, onError }; });
 
   useImperativeHandle(ref, () => ({
-    play: () => { void audioRef.current?.play(); },
-    pause: () => audioRef.current?.pause(),
+    play: () => { requestedPlay.current = true; void audioRef.current?.play(); },
+    pause: () => { requestedPlay.current = false; audioRef.current?.pause(); },
     seekTo: (seconds) => { if (audioRef.current) audioRef.current.currentTime = Math.max(0, seconds); },
     setVolume: (value) => { if (audioRef.current) audioRef.current.volume = Math.max(0, Math.min(1, value / 100)); },
     getCurrentTime: () => audioRef.current?.currentTime || 0,
     getDuration: () => audioRef.current?.duration || 0,
-    loadAudio: (url) => { if (audioRef.current) { audioRef.current.src = url; audioRef.current.load(); void audioRef.current.play(); } },
+    loadAudio: (url, autoplay = false) => {
+      const audio = audioRef.current;
+      if (!audio) return;
+      requestedPlay.current = autoplay;
+      audio.pause();
+      audio.src = url;
+      audio.load();
+      if (autoplay) void audio.play().catch(() => callbacks.current.onStatusChange("paused"));
+    },
   }), []);
 
   useEffect(() => {
@@ -42,64 +50,37 @@ const BackgroundAudioPlayer = forwardRef<BackgroundAudioPlayerRef, Props>(functi
     audio.volume = Math.max(0, Math.min(1, volume / 100));
   }, [volume]);
 
+  // This component is deliberately passive when the selected track changes.
+  // It must never autoplay a Spotify/YouTube preview merely because a playlist was loaded.
+  // Native background playback is only started by an explicit user play action through loadAudio(url, true).
   useEffect(() => {
     const audio = audioRef.current;
-    if (!audio || !track) return;
-    let cancelled = false;
-    const currentRequest = ++requestId.current;
-
-    const configureMediaSession = () => {
-      if (!("mediaSession" in navigator) || !("MediaMetadata" in window)) return;
-      try {
-        navigator.mediaSession.metadata = new MediaMetadata({
-          title: track.nome_musica,
-          artist: track.nome_artista,
-          album: track.album || "PobreMusic",
-          artwork: track.capa ? [{ src: track.capa, sizes: "512x512", type: "image/jpeg" }] : [],
-        });
-        const handlers: [MediaSessionAction, () => void][] = [
-          ["play", () => void audio.play()],
-          ["pause", () => audio.pause()],
-          ["seekbackward", () => { audio.currentTime = Math.max(0, audio.currentTime - 10); }],
-          ["seekforward", () => { audio.currentTime = Math.min(audio.duration || Infinity, audio.currentTime + 10); }],
-          ["previoustrack", () => window.dispatchEvent(new CustomEvent("pobremusic:previous"))],
-          ["nexttrack", () => window.dispatchEvent(new CustomEvent("pobremusic:next"))],
-        ];
-        for (const [action, handler] of handlers) { try { navigator.mediaSession.setActionHandler(action, handler); } catch {} }
-      } catch {}
-    };
-
-    const start = async () => {
-      let url = track.audioUrl || track.previewUrl || "";
-      if (!url) {
-        callbacks.current.onStatusChange("buffering");
-        try {
-          const response = await fetch(`/api/jamendo-search?nome_musica=${encodeURIComponent(track.nome_musica)}&nome_artista=${encodeURIComponent(track.nome_artista)}`, { signal: AbortSignal.timeout(9000) });
-          if (response.ok && response.headers.get("content-type")?.includes("application/json")) {
-            const data = await response.json();
-            if (data?.sucesso && typeof data.audioUrl === "string") url = data.audioUrl;
-          }
-        } catch {}
-      }
-      if (cancelled || currentRequest !== requestId.current || !url) {
-        if (!url && !cancelled) callbacks.current.onError();
-        return;
-      }
-      configureMediaSession();
-      if (audio.src !== url) {
-        audio.src = url;
-        audio.load();
-      }
-      try {
-        await audio.play();
-      } catch {
-        callbacks.current.onStatusChange("paused");
-      }
-    };
-
-    void start();
-    return () => { cancelled = true; audio.pause(); audio.removeAttribute("src"); audio.load(); };
-  }, [track?.audioUrl, track?.previewUrl, track?.nome_musica, track?.nome_artista, track?.album, track?.capa]);
+    if (!audio || !track?.audioUrl) return;
+    if (audio.src !== track.audioUrl) {
+      audio.pause();
+      requestedPlay.current = false;
+      audio.src = track.audioUrl;
+      audio.load();
+    }
+    if (!("mediaSession" in navigator) || !("MediaMetadata" in window)) return;
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: track.nome_musica,
+        artist: track.nome_artista,
+        album: track.album || "PobreMusic",
+        artwork: track.capa ? [{ src: track.capa, sizes: "512x512", type: "image/jpeg" }] : [],
+      });
+      const handlers: [MediaSessionAction, () => void][] = [
+        ["play", () => { requestedPlay.current = true; void audio.play(); }],
+        ["pause", () => { requestedPlay.current = false; audio.pause(); }],
+        ["seekbackward", () => { audio.currentTime = Math.max(0, audio.currentTime - 10); }],
+        ["seekforward", () => { audio.currentTime = Math.min(audio.duration || Infinity, audio.currentTime + 10); }],
+        ["previoustrack", () => window.dispatchEvent(new CustomEvent("pobremusic:previous"))],
+        ["nexttrack", () => window.dispatchEvent(new CustomEvent("pobremusic:next"))],
+      ];
+      for (const [action, handler] of handlers) { try { navigator.mediaSession.setActionHandler(action, handler); } catch {} }
+    } catch {}
+  }, [track?.audioUrl, track?.nome_musica, track?.nome_artista, track?.album, track?.capa]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -121,7 +102,7 @@ const BackgroundAudioPlayer = forwardRef<BackgroundAudioPlayerRef, Props>(functi
     return () => { window.removeEventListener("pobremusic:previous", previous); window.removeEventListener("pobremusic:next", next); };
   }, []);
 
-  return <audio ref={audioRef} preload="auto" playsInline style={{ position: "fixed", width: 1, height: 1, opacity: 0, pointerEvents: "none", bottom: 0, left: 0 }} aria-label="PobreMusic áudio" />;
+  return <audio ref={audioRef} preload="none" playsInline style={{ position: "fixed", width: 1, height: 1, opacity: 0, pointerEvents: "none", bottom: 0, left: 0 }} aria-label="PobreMusic áudio" />;
 });
 
 export default BackgroundAudioPlayer;
