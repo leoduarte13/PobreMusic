@@ -10,6 +10,22 @@
       "destination": "/api/index.ts?route=callback"
     },
     {
+      "source": "/api/public-playlist",
+      "destination": "/api/public-playlist.ts"
+    },
+    {
+      "source": "/api/public-playlist/",
+      "destination": "/api/public-playlist.ts"
+    },
+    {
+      "source": "/api/spotify-playlist",
+      "destination": "/api/spotify-playlist.ts"
+    },
+    {
+      "source": "/api/spotify-playlist/",
+      "destination": "/api/spotify-playlist.ts"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "/api/index.ts"
     }
