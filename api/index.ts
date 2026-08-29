@@ -8,8 +8,7 @@ export default function handler(req: any, res: any) {
   );
 
   if (req.method === 'OPTIONS') {
-    res.status(200).end();
-    return;
+    return res.status(200).end();
   }
 
   const url = req.url || '';
@@ -23,18 +22,17 @@ export default function handler(req: any, res: any) {
     'user-library-read'
   ].join(' ');
 
-  // 1. Inicia o login do Spotify (redireciona a janela em branco)
+  // Login / Autorização
   if (url.includes('/auth/spotify/url') || url.includes('/login') || (url.includes('/auth/spotify') && !url.includes('/callback') && !url.includes('/set-credentials'))) {
     const spotifyAuthUrl = `https://accounts.spotify.com/authorize?response_type=code&client_id=${clientId}&scope=${encodeURIComponent(scopes)}&redirect_uri=${encodeURIComponent(redirectUri)}`;
     
-    // Se a chamada for via API fetch, devolve a URL em JSON; se for abertura direta, faz o redirect 302
     if (req.headers.accept && req.headers.accept.includes('application/json')) {
       return res.status(200).json({ url: spotifyAuthUrl });
     }
-    return res.redirect(spotifyAuthUrl);
+    return res.redirect(302, spotifyAuthUrl);
   }
 
-  // 2. Status de configuração e perfil
+  // Status e perfil
   if (url.includes('config-status') || url.includes('auth/me')) {
     return res.status(200).json({
       configured: true,
@@ -44,7 +42,7 @@ export default function handler(req: any, res: any) {
     });
   }
 
-  // 3. Salvar credenciais
+  // Salvar credenciais
   if (url.includes('set-credentials')) {
     return res.status(200).json({
       success: true,
@@ -54,7 +52,7 @@ export default function handler(req: any, res: any) {
     });
   }
 
-  // 4. Playlists
+  // Playlists
   if (url.includes('my-playlists')) {
     return res.status(200).json({ items: [], playlists: [] });
   }
