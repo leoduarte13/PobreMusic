@@ -477,7 +477,13 @@ export async function fetchPlaylistSafe(
           };
         }
 
-        const rawItems = spotifyData.tracks?.items || [];
+        const rawItems = Array.isArray(spotifyData.items)
+  ? spotifyData.items
+  : Array.isArray(spotifyData.items?.items)
+    ? spotifyData.items.items
+    : Array.isArray(spotifyData.tracks?.items)
+      ? spotifyData.tracks.items
+      : [];
         const faixas: Track[] = rawItems
           .map((item: any) => {
             const tr = item.track || item;
