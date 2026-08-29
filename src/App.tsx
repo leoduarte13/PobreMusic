@@ -15,37 +15,28 @@ import { SpotifyAuthModal } from "./components/SpotifyAuthModal";
 import { MobileDownloadModal } from "./components/MobileDownloadModal";
 import { MobileDownloadBanner } from "./components/MobileDownloadBanner";
 import { GoogleAuthErrorModal } from "./components/GoogleAuthErrorModal";
-import { 
-  Track, 
-  PlaylistData, 
-  ConfigStatus, 
-  PlaybackStatus, 
-  SpotifyUser, 
-  UserPlaylistSummary, 
-  SavedPlaylist, 
-  EqualizerState,
-  GoogleUserProfile
-} from "./types";
-import { 
-  signInWithGoogle,
-  logoutGoogle,
-  subscribeToAuth,
-  checkRedirectAuthResult,
-  formatAuthErrorMessage,
-  saveUserPlaylistToCloud, 
-  deleteUserPlaylistFromCloud, 
-  subscribeToUserCloudPlaylists,
-  saveUserSettingsToCloud 
-} from "./lib/firebase";
+import { Track, PlaylistData, ConfigStatus, PlaybackStatus, SpotifyUser, UserPlaylistSummary, SavedPlaylist, EqualizerState, GoogleUserProfile } from "./types";
+import { signInWithGoogle, logoutGoogle, subscribeToAuth, checkRedirectAuthResult, formatAuthErrorMessage, saveUserPlaylistToCloud, deleteUserPlaylistFromCloud, subscribeToUserCloudPlaylists, saveUserSettingsToCloud } from "./lib/firebase";
 import { fetchPlaylistSafe, resolveYouTubeVideoIdClient, getCandidateBackendUrls } from "./utils/clientMusicResolver";
 import { playlistLogger } from "./utils/logger";
 import { AlertCircle, Disc3, Lock, LogIn } from "lucide-react";
 
+function normalizeSpotifyPlaylistSummary(p: any): UserPlaylistSummary {
+  return {
+    id: String(p?.id || ""),
+    name: String(p?.name || "Playlist sem nome"),
+    description: p?.description || "",
+    isPrivate: p?.isPrivate ?? p?.public === false ?? false,
+    isCollaborative: Boolean(p?.isCollaborative ?? p?.collaborative),
+    trackCount: Number(p?.trackCount ?? p?.total_tracks ?? p?.items?.total ?? p?.tracks?.total ?? 0),
+    cover: p?.cover || p?.image_url || p?.images?.[0]?.url || "",
+    ownerName: p?.ownerName || p?.owner?.display_name || "Você",
+  };
+}
+
 export default function App() {
   const [configStatus, setConfigStatus] = useState<ConfigStatus | null>(null);
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
-  
-  // Modals state
   const [isEqualizerModalOpen, setIsEqualizerModalOpen] = useState(false);
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
@@ -53,116 +44,23 @@ export default function App() {
   const [isSpotifyNowPlayingOpen, setIsSpotifyNowPlayingOpen] = useState(false);
   const [isMobileDownloadOpen, setIsMobileDownloadOpen] = useState(false);
   const [isSpotifyAuthModalOpen, setIsSpotifyAuthModalOpen] = useState(false);
-
-  // Mini Player Mode state
-  const [isMiniPlayerMode, setIsMiniPlayerMode] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem("spottube_mini_player_mode") === "true";
-    } catch {
-      return false;
-    }
-  });
-
-  // PWA Install state
+  const [isMiniPlayerMode, setIsMiniPlayerMode] = useState<boolean>(() => { try { return localStorage.getItem("spottube_mini_player_mode") === "true"; } catch { return false; } });
   const [pwaPromptEvent, setPwaPromptEvent] = useState<any>(null);
   const [canInstallPWA, setCanInstallPWA] = useState(false);
-
-  // Equalizer state
-  const [eqState, setEqState] = useState<EqualizerState>(() => {
-    try {
-      const saved = localStorage.getItem("spottube_equalizer_settings");
-      if (saved) return JSON.parse(saved);
-    } catch (e) {
-      console.warn("Could not load saved equalizer settings", e);
-    }
-    return {
-      enabled: false,
-      preset: "flat",
-      bands: [0, 0, 0, 0, 0, 0, 0],
-      bassBoost: 0,
-      surround: false,
-    };
-  });
-
-  // Google Auth State
+  const [eqState, setEqState] = useState<EqualizerState>(() => { try { const saved = localStorage.getItem("spottube_equalizer_settings"); if (saved) return JSON.parse(saved); } catch {} return { enabled: false, preset: "flat", bands: [0,0,0,0,0,0,0], bassBoost: 0, surround: false }; });
   const [googleUser, setGoogleUser] = useState<GoogleUserProfile | null>(null);
   const [isGoogleLoggingIn, setIsGoogleLoggingIn] = useState(false);
-  const [googleAuthError, setGoogleAuthError] = useState<{
-    title: string;
-    message: string;
-    isDomainError: boolean;
-    currentDomain: string;
-  } | null>(null);
-
-  // Saved Playlists state
-  const [savedPlaylists, setSavedPlaylists] = useState<SavedPlaylist[]>(() => {
-    try {
-      const saved = localStorage.getItem("spottube_saved_playlists");
-      if (saved) return JSON.parse(saved);
-    } catch (e) {
-      console.warn("Could not load saved playlists from localStorage", e);
-    }
-    return [];
-  });
-
-  // Listen to Google Auth state and check redirect results on mobile mount
-  useEffect(() => {
-    // Check if user just returned from a mobile redirect login
-    checkRedirectAuthResult()
-      .then((redirectUser) => {
-        if (redirectUser) {
-          setGoogleUser(redirectUser);
-        }
-      })
-      .catch((err) => {
-        console.warn("Google Redirect Auth notice:", err);
-      });
-
-    const unsubscribe = subscribeToAuth((user) => {
-      setGoogleUser(user);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  // Subscribe to Cloud Firestore Playlists per authenticated user
-  useEffect(() => {
-    if (googleUser?.uid) {
-      const unsubscribe = subscribeToUserCloudPlaylists(googleUser.uid, (cloudList) => {
-        if (cloudList) {
-          setSavedPlaylists(cloudList);
-          try {
-            localStorage.setItem(`spottube_saved_playlists_${googleUser.uid}`, JSON.stringify(cloudList));
-          } catch {}
-        }
-      });
-      return () => unsubscribe();
-    } else {
-      // Unauthenticated fallback to local state
-      try {
-        const saved = localStorage.getItem("spottube_saved_playlists");
-        if (saved) {
-          setSavedPlaylists(JSON.parse(saved));
-        } else {
-          setSavedPlaylists([]);
-        }
-      } catch {}
-    }
-  }, [googleUser]);
-
-  // Auth State (Spotify)
+  const [googleAuthError, setGoogleAuthError] = useState<{title:string;message:string;isDomainError:boolean;currentDomain:string}|null>(null);
+  const [savedPlaylists, setSavedPlaylists] = useState<SavedPlaylist[]>(() => { try { const saved = localStorage.getItem("spottube_saved_playlists"); if (saved) return JSON.parse(saved); } catch {} return []; });
   const [spotifyUser, setSpotifyUser] = useState<SpotifyUser | null>(null);
   const [userPlaylists, setUserPlaylists] = useState<UserPlaylistSummary[]>([]);
   const [isLoadingUserPlaylists, setIsLoadingUserPlaylists] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
-
-  // Playlist State
   const [playlistData, setPlaylistData] = useState<PlaylistData | null>(null);
   const [tracks, setTracks] = useState<Track[]>([]);
   const [isLoadingPlaylist, setIsLoadingPlaylist] = useState(false);
   const [playlistError, setPlaylistError] = useState<string | null>(null);
   const [needsAuthNotice, setNeedsAuthNotice] = useState(false);
-
-  // Playback State
   const [currentTrackIndex, setCurrentTrackIndex] = useState<number | null>(null);
   const [playbackStatus, setPlaybackStatus] = useState<PlaybackStatus>("unstarted");
   const [currentTime, setCurrentTime] = useState(0);
@@ -171,1199 +69,95 @@ export default function App() {
   const [prevVolume, setPrevVolume] = useState(80);
   const [isMuted, setIsMuted] = useState(false);
   const [shuffle, setShuffle] = useState(false);
-  const [repeatMode, setRepeatMode] = useState<"off" | "all" | "one">("all");
-
+  const [repeatMode, setRepeatMode] = useState<"off"|"all"|"one">("all");
   const ytPlayerRef = useRef<YouTubePlayerRef>(null);
   const silentAudioRef = useRef<HTMLAudioElement | null>(null);
-
-  // Synchronized refs to guarantee zero-closure-staleness during automatic continuous playback
   const tracksRef = useRef<Track[]>(tracks);
-  const currentTrackIndexRef = useRef<number | null>(currentTrackIndex);
-  const shuffleRef = useRef<boolean>(shuffle);
-  const repeatModeRef = useRef<"off" | "all" | "one">(repeatMode);
+  const currentTrackIndexRef = useRef<number|null>(currentTrackIndex);
+  const shuffleRef = useRef(shuffle);
+  const repeatModeRef = useRef<"off"|"all"|"one">(repeatMode);
+  useEffect(() => { tracksRef.current = tracks; }, [tracks]);
+  useEffect(() => { currentTrackIndexRef.current = currentTrackIndex; }, [currentTrackIndex]);
+  useEffect(() => { shuffleRef.current = shuffle; }, [shuffle]);
+  useEffect(() => { repeatModeRef.current = repeatMode; }, [repeatMode]);
+  const toggleMiniPlayer = useCallback(() => setIsMiniPlayerMode(prev => { const next=!prev; try { localStorage.setItem("spottube_mini_player_mode",String(next)); } catch {} return next; }), []);
+  useEffect(() => { const h=(e:Event)=>{e.preventDefault();setPwaPromptEvent(e);setCanInstallPWA(true)}; window.addEventListener("beforeinstallprompt",h); return()=>window.removeEventListener("beforeinstallprompt",h); },[]);
+  const handleTriggerPWAInstall = async()=>{if(!pwaPromptEvent)return;pwaPromptEvent.prompt();const {outcome}=await pwaPromptEvent.userChoice;if(outcome==="accepted"){setCanInstallPWA(false);setPwaPromptEvent(null)}};
+  const handleLoginGoogle = async()=>{setIsGoogleLoggingIn(true);setGoogleAuthError(null);try{const user=await signInWithGoogle();setGoogleUser(user)}catch(err:any){const code=err?.code||"";if(code!=="auth/popup-closed-by-user"&&code!=="auth/cancelled-popup-request")setGoogleAuthError(formatAuthErrorMessage(err))}finally{setIsGoogleLoggingIn(false)}};
+  const handleLogoutGoogle = async()=>{try{await logoutGoogle();setGoogleUser(null)}catch(err){console.warn("Google logout error:",err)}};
+  useEffect(()=>{checkRedirectAuthResult().then(u=>{if(u)setGoogleUser(u)}).catch(()=>{});const unsubscribe=subscribeToAuth(user=>setGoogleUser(user));return()=>unsubscribe()},[]);
+  useEffect(()=>{if(googleUser?.uid){return subscribeToUserCloudPlaylists(googleUser.uid,list=>{if(list){setSavedPlaylists(list);try{localStorage.setItem(`spottube_saved_playlists_${googleUser.uid}`,JSON.stringify(list))}catch{}}})}try{const saved=localStorage.getItem("spottube_saved_playlists");setSavedPlaylists(saved?JSON.parse(saved):[])}catch{setSavedPlaylists([])}},[googleUser]);
+  const handleUpdateEqState=(newState:EqualizerState)=>{setEqState(newState);try{localStorage.setItem("spottube_equalizer_settings",JSON.stringify(newState))}catch{}if(googleUser?.uid)saveUserSettingsToCloud(googleUser.uid,{equalizer:newState})};
+  const persistSavedPlaylists=(updated:SavedPlaylist[])=>{setSavedPlaylists(updated);try{localStorage.setItem(googleUser?.uid?`spottube_saved_playlists_${googleUser.uid}`:"spottube_saved_playlists",JSON.stringify(updated))}catch{}};
+  const handleSavePlaylist=async(newPlaylist:SavedPlaylist)=>{const p={...newPlaylist,userId:googleUser?.uid,isCloud:!!googleUser?.uid,updatedAt:Date.now()};const i=savedPlaylists.findIndex(x=>x.id===p.id||x.name===p.name);const updated=i>=0?savedPlaylists.map((x,n)=>n===i?p:x):[p,...savedPlaylists];persistSavedPlaylists(updated);if(googleUser?.uid)try{await saveUserPlaylistToCloud(googleUser.uid,p)}catch{}};
+  const handleCreatePlaylist=async(p:SavedPlaylist)=>{const x={...p,userId:googleUser?.uid,isCloud:!!googleUser?.uid,updatedAt:Date.now()};persistSavedPlaylists([x,...savedPlaylists]);if(googleUser?.uid)try{await saveUserPlaylistToCloud(googleUser.uid,x)}catch{}setPlaylistData({sucesso:true,playlist_id:x.id,nome_playlist:x.name,descricao:x.description||"Playlist personalizada criada no POBREMUSIC",capa_playlist:x.cover,total_faixas:x.tracks.length,faixas:x.tracks});setTracks(x.tracks);setCurrentTrackIndex(x.tracks.length?0:null)};
+  const handleDeleteSavedPlaylist=async(id:string)=>{persistSavedPlaylists(savedPlaylists.filter(p=>p.id!==id));if(googleUser?.uid)try{await deleteUserPlaylistFromCloud(googleUser.uid,id)}catch{}};
+  const handleSelectSavedPlaylist=(p:SavedPlaylist)=>{setPlaylistData({sucesso:true,playlist_id:p.id,nome_playlist:p.name,descricao:p.description||"Playlist salva",capa_playlist:p.cover,total_faixas:p.tracks.length,faixas:p.tracks});setTracks(p.tracks);setCurrentTrackIndex(p.tracks.length?0:null)};
+  const handleAddTrack=(t:Track)=>setTracks(prev=>{const u=[...prev,t];if(playlistData?.playlist_id){const m=savedPlaylists.find(p=>p.id===playlistData.playlist_id);if(m)handleSavePlaylist({...m,tracks:u})}if(currentTrackIndex===null)setCurrentTrackIndex(0);return u});
+  const handleAddMultipleTracks=(ts:Track[])=>{if(!ts.length)return;setTracks(prev=>{const u=[...prev,...ts];if(playlistData?.playlist_id){const m=savedPlaylists.find(p=>p.id===playlistData.playlist_id);if(m)handleSavePlaylist({...m,tracks:u})}if(currentTrackIndex===null)setCurrentTrackIndex(0);return u})};
+  const handleRemoveTrack=(idx:number)=>setTracks(prev=>{const u=prev.filter((_,i)=>i!==idx);if(playlistData?.playlist_id){const m=savedPlaylists.find(p=>p.id===playlistData.playlist_id);if(m)handleSavePlaylist({...m,tracks:u})}if(currentTrackIndex!==null){if(currentTrackIndex===idx){if(!u.length){setCurrentTrackIndex(null);ytPlayerRef.current?.pause()}else{const n=idx<u.length?idx:0;setCurrentTrackIndex(n);playTrack(n)}}else if(currentTrackIndex>idx)setCurrentTrackIndex(currentTrackIndex-1)}return u});
+  const handleRemoveMultipleTracks=(indexes:number[])=>setTracks(prev=>{const set=new Set(indexes);const u=prev.filter((_,i)=>!set.has(i));if(playlistData?.playlist_id){const m=savedPlaylists.find(p=>p.id===playlistData.playlist_id);if(m)handleSavePlaylist({...m,tracks:u})}if(currentTrackIndex!==null&&set.has(currentTrackIndex)){if(!u.length){setCurrentTrackIndex(null);ytPlayerRef.current?.pause()}else{setCurrentTrackIndex(0);playTrack(0)}}return u});
+  useEffect(()=>{fetch("/api/config-status",{cache:"no-store"}).then(r=>r.json()).then(setConfigStatus).catch(()=>{})},[]);
 
-  useEffect(() => {
-    tracksRef.current = tracks;
-  }, [tracks]);
-
-  useEffect(() => {
-    currentTrackIndexRef.current = currentTrackIndex;
-  }, [currentTrackIndex]);
-
-  useEffect(() => {
-    shuffleRef.current = shuffle;
-  }, [shuffle]);
-
-  useEffect(() => {
-    repeatModeRef.current = repeatMode;
-  }, [repeatMode]);
-
-  // Toggle Mini Player Mode
-  const toggleMiniPlayer = useCallback(() => {
-    setIsMiniPlayerMode((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem("spottube_mini_player_mode", String(next));
-      } catch {}
-      return next;
-    });
-  }, []);
-
-  // Listen for PWA beforeinstallprompt
-  useEffect(() => {
-    const handleBeforeInstall = (e: Event) => {
-      e.preventDefault();
-      setPwaPromptEvent(e);
-      setCanInstallPWA(true);
-    };
-
-    window.addEventListener("beforeinstallprompt", handleBeforeInstall);
-    return () => window.removeEventListener("beforeinstallprompt", handleBeforeInstall);
-  }, []);
-
-  const handleTriggerPWAInstall = async () => {
-    if (!pwaPromptEvent) return;
-    pwaPromptEvent.prompt();
-    const { outcome } = await pwaPromptEvent.userChoice;
-    if (outcome === "accepted") {
-      setCanInstallPWA(false);
-      setPwaPromptEvent(null);
-    }
-  };
-
-  // Google Login / Logout Handlers
-  const handleLoginGoogle = async () => {
-    setIsGoogleLoggingIn(true);
-    setGoogleAuthError(null);
-    try {
-      const user = await signInWithGoogle();
-      setGoogleUser(user);
-    } catch (err: any) {
-      console.warn("Google login notice:", err);
-      // Only show error modal if it wasn't a standard user cancellation
-      const errCode = err?.code || "";
-      if (errCode !== "auth/popup-closed-by-user" && errCode !== "auth/cancelled-popup-request") {
-        const formatted = formatAuthErrorMessage(err);
-        setGoogleAuthError(formatted);
-      }
-    } finally {
-      setIsGoogleLoggingIn(false);
-    }
-  };
-
-  const handleLogoutGoogle = async () => {
-    try {
-      await logoutGoogle();
-      setGoogleUser(null);
-    } catch (err) {
-      console.warn("Google logout error:", err);
-    }
-  };
-
-  // Persist Equalizer settings & sync to cloud
-  const handleUpdateEqState = (newState: EqualizerState) => {
-    setEqState(newState);
-    try {
-      localStorage.setItem("spottube_equalizer_settings", JSON.stringify(newState));
-    } catch (e) {
-      console.warn("Could not persist equalizer settings", e);
-    }
-    if (googleUser?.uid) {
-      saveUserSettingsToCloud(googleUser.uid, { equalizer: newState });
-    }
-  };
-
-  // Persist Saved Playlists locally and in Firestore Cloud
-  const persistSavedPlaylists = (updated: SavedPlaylist[]) => {
-    setSavedPlaylists(updated);
-    try {
-      const storageKey = googleUser?.uid ? `spottube_saved_playlists_${googleUser.uid}` : "spottube_saved_playlists";
-      localStorage.setItem(storageKey, JSON.stringify(updated));
-    } catch (e) {
-      console.warn("Could not persist saved playlists", e);
-    }
-  };
-
-  const handleSavePlaylist = async (newPlaylist: SavedPlaylist) => {
-    const playlistWithCloud: SavedPlaylist = { 
-      ...newPlaylist, 
-      userId: googleUser?.uid,
-      isCloud: !!googleUser?.uid, 
-      updatedAt: Date.now() 
-    };
-    const existingIdx = savedPlaylists.findIndex((p) => p.id === playlistWithCloud.id || p.name === playlistWithCloud.name);
-    let updated: SavedPlaylist[];
-    if (existingIdx >= 0) {
-      updated = [...savedPlaylists];
-      updated[existingIdx] = playlistWithCloud;
-    } else {
-      updated = [playlistWithCloud, ...savedPlaylists];
-    }
-    persistSavedPlaylists(updated);
-
-    // Sync with Cloud Firestore if authenticated
-    if (googleUser?.uid) {
-      try {
-        await saveUserPlaylistToCloud(googleUser.uid, playlistWithCloud);
-      } catch (err) {
-        console.warn("Could not sync playlist to cloud Firestore:", err);
-      }
-    }
-  };
-
-  const handleCreatePlaylist = async (newPlaylist: SavedPlaylist) => {
-    const playlistWithCloud: SavedPlaylist = { 
-      ...newPlaylist, 
-      userId: googleUser?.uid,
-      isCloud: !!googleUser?.uid, 
-      updatedAt: Date.now() 
-    };
-    persistSavedPlaylists([playlistWithCloud, ...savedPlaylists]);
-    
-    // Sync to Cloud Firestore if logged in
-    if (googleUser?.uid) {
-      try {
-        await saveUserPlaylistToCloud(googleUser.uid, playlistWithCloud);
-      } catch (err) {
-        console.warn("Could not sync created playlist to cloud:", err);
-      }
-    }
-
-    // Set as active playlist in view
-    setPlaylistData({
-      sucesso: true,
-      playlist_id: playlistWithCloud.id,
-      nome_playlist: playlistWithCloud.name,
-      descricao: playlistWithCloud.description || "Playlist personalizada criada no POBREMUSIC",
-      capa_playlist: playlistWithCloud.cover,
-      total_faixas: playlistWithCloud.tracks.length,
-      faixas: playlistWithCloud.tracks,
-    });
-    setTracks(playlistWithCloud.tracks);
-    setCurrentTrackIndex(playlistWithCloud.tracks.length > 0 ? 0 : null);
-  };
-
-  const handleDeleteSavedPlaylist = async (id: string) => {
-    const updated = savedPlaylists.filter((p) => p.id !== id);
-    persistSavedPlaylists(updated);
-
-    // Delete from Firestore Cloud if user is authenticated
-    if (googleUser?.uid) {
-      try {
-        await deleteUserPlaylistFromCloud(googleUser.uid, id);
-      } catch (err) {
-        console.warn("Could not delete playlist from cloud Firestore:", err);
-      }
-    }
-  };
-
-  const handleSelectSavedPlaylist = (playlist: SavedPlaylist) => {
-    setPlaylistData({
-      sucesso: true,
-      playlist_id: playlist.id,
-      nome_playlist: playlist.name,
-      descricao: playlist.description || "Playlist salva na nuvem",
-      capa_playlist: playlist.cover,
-      total_faixas: playlist.tracks.length,
-      faixas: playlist.tracks,
-    });
-    setTracks(playlist.tracks);
-    setCurrentTrackIndex(playlist.tracks.length > 0 ? 0 : null);
-  };
-
-  // Add a single track to the current playlist and sync with Cloud
-  const handleAddTrack = (newTrack: Track) => {
-    setTracks((prev) => {
-      const updated = [...prev, newTrack];
-      
-      // If currently displaying a saved playlist, sync with Firestore Cloud
-      if (playlistData?.playlist_id) {
-        const matchingSaved = savedPlaylists.find((p) => p.id === playlistData.playlist_id);
-        if (matchingSaved) {
-          const updatedSaved = { ...matchingSaved, tracks: updated, updatedAt: Date.now() };
-          handleSavePlaylist(updatedSaved);
-        }
-      }
-
-      // If no track is currently selected, select the added track
-      if (currentTrackIndex === null) {
-        setCurrentTrackIndex(0);
-      }
-      return updated;
-    });
-  };
-
-  // Add multiple tracks to the current playlist and sync with Cloud
-  const handleAddMultipleTracks = (newTracksToAdd: Track[]) => {
-    if (newTracksToAdd.length === 0) return;
-    setTracks((prev) => {
-      const updated = [...prev, ...newTracksToAdd];
-      
-      // If currently displaying a saved playlist, sync with Firestore Cloud
-      if (playlistData?.playlist_id) {
-        const matchingSaved = savedPlaylists.find((p) => p.id === playlistData.playlist_id);
-        if (matchingSaved) {
-          const updatedSaved = { ...matchingSaved, tracks: updated, updatedAt: Date.now() };
-          handleSavePlaylist(updatedSaved);
-        }
-      }
-
-      if (currentTrackIndex === null && updated.length > 0) {
-        setCurrentTrackIndex(0);
-      }
-      return updated;
-    });
-  };
-
-  // Excluir música da playlist atual
-  const handleRemoveTrack = (indexToRemove: number) => {
-    setTracks((prevTracks) => {
-      const updated = prevTracks.filter((_, idx) => idx !== indexToRemove);
-      
-      // Sync with cloud if saved playlist
-      if (playlistData?.playlist_id) {
-        const matchingSaved = savedPlaylists.find((p) => p.id === playlistData.playlist_id);
-        if (matchingSaved) {
-          const updatedSaved = { ...matchingSaved, tracks: updated, updatedAt: Date.now() };
-          handleSavePlaylist(updatedSaved);
-        }
-      }
-
-      // Adjust current playing track index accordingly
-      if (currentTrackIndex !== null) {
-        if (currentTrackIndex === indexToRemove) {
-          if (updated.length === 0) {
-            setCurrentTrackIndex(null);
-            ytPlayerRef.current?.pause();
-          } else {
-            const nextIndex = indexToRemove < updated.length ? indexToRemove : 0;
-            setCurrentTrackIndex(nextIndex);
-            playTrack(nextIndex);
-          }
-        } else if (currentTrackIndex > indexToRemove) {
-          setCurrentTrackIndex(currentTrackIndex - 1);
-        }
-      }
-      return updated;
-    });
-  };
-
-  // Bulk remove multiple tracks from current playlist
-  const handleRemoveMultipleTracks = (indexesToRemove: number[]) => {
-    const removeSet = new Set(indexesToRemove);
-    setTracks((prevTracks) => {
-      const updated = prevTracks.filter((_, idx) => !removeSet.has(idx));
-      
-      if (playlistData?.playlist_id) {
-        const matchingSaved = savedPlaylists.find((p) => p.id === playlistData.playlist_id);
-        if (matchingSaved) {
-          const updatedSaved = { ...matchingSaved, tracks: updated, updatedAt: Date.now() };
-          handleSavePlaylist(updatedSaved);
-        }
-      }
-
-      if (currentTrackIndex !== null && removeSet.has(currentTrackIndex)) {
-        if (updated.length === 0) {
-          setCurrentTrackIndex(null);
-          ytPlayerRef.current?.pause();
-        } else {
-          setCurrentTrackIndex(0);
-          playTrack(0);
-        }
-      }
-      return updated;
-    });
-  };
-
-  // Load config status on mount
-  useEffect(() => {
-    fetch("/api/config-status")
-      .then((res) => res.json())
-      .then((data) => setConfigStatus(data))
-      .catch((err) => console.warn("Could not check config status:", err));
-  }, []);
-
-  // Fetch User's Playlists
-  const fetchUserPlaylists = useCallback(async () => {
+  const fetchUserPlaylists=useCallback(async()=>{
     setIsLoadingUserPlaylists(true);
-    try {
-      const token = localStorage.getItem("spotifyTokenManual") || localStorage.getItem("spotifyTokenManuaL");
-      
-      // 1. Direct Spotify API call if token is saved in client (for mobile APKs / standalone)
-      if (token) {
-        try {
-          const directRes = await fetch("https://api.spotify.com/v1/me/playlists?limit=50", {
-            headers: { Authorization: `Bearer ${token}` },
-          });
-          if (directRes.ok) {
-            const spData = await directRes.json();
-            const mapped = (spData.items || []).map((p: any) => ({
-              id: p.id,
-              name: p.name,
-              description: p.description || "",
-              total_tracks: p.tracks?.total || 0,
-              image_url: p.images?.[0]?.url || "",
-              is_public: p.public,
-              owner_name: p.owner?.display_name || "Você",
-            }));
-            setUserPlaylists(mapped);
-            setIsLoadingUserPlaylists(false);
-            return;
-          }
-        } catch (e) {
-          console.warn("Direct Spotify API fetch notice:", e);
-        }
-      }
+    try{
+      const token=localStorage.getItem("spotifyTokenManual")||localStorage.getItem("spotifyTokenManuaL");
+      const headers:Record<string,string>={};
+      if(token)headers.Authorization=`Bearer ${token}`;
+      const res=await fetch("/api/my-playlists",{headers,credentials:"include",cache:"no-store"});
+      const data=await res.json().catch(()=>({}));
+      if(res.ok){setUserPlaylists((data.playlists||[]).map(normalizeSpotifyPlaylistSummary));return;}
+      if(res.status===401){setSpotifyUser(null);}
+    }catch(err){console.warn("Could not fetch user playlists:",err)}finally{setIsLoadingUserPlaylists(false)}
+  },[]);
 
-      // 2. Server API route
-      const headers: Record<string, string> = {};
-      if (token) {
-        headers["Authorization"] = `Bearer ${token}`;
-      }
-
-      const res = await fetch("/api/my-playlists", {
-        method: "GET",
-        headers,
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        setUserPlaylists(data.playlists || []);
-      } else {
-        if (res.status === 401) {
-          localStorage.removeItem("spotifyTokenManual");
-          localStorage.removeItem("spotifyTokenManuaL");
-          setSpotifyUser(null);
-        }
-      }
-    } catch (err) {
-      console.warn("Could not fetch user playlists:", err);
-    } finally {
-      setIsLoadingUserPlaylists(false);
-    }
-  }, []);
-
-  // Check Current Spotify Auth Status
-  const checkAuthStatus = useCallback(async () => {
-    try {
-      const token = localStorage.getItem("spotifyTokenManual") || localStorage.getItem("spotifyTokenManuaL");
-      
-      // 1. If client token exists, verify directly with Spotify API
-      if (token) {
-        try {
-          const meDirect = await fetch("https://api.spotify.com/v1/me", {
-            headers: { Authorization: `Bearer ${token}` },
-          });
-          if (meDirect.ok) {
-            const meData = await meDirect.json();
-            const u: SpotifyUser = {
-              id: meData.id,
-              display_name: meData.display_name || "Usuário Spotify",
-              email: meData.email,
-              images: meData.images,
-              product: meData.product,
-            };
-            setSpotifyUser(u);
-            fetchUserPlaylists();
-            return;
-          }
-        } catch (e) {
-          console.warn("Direct me check notice:", e);
-        }
-      }
-
-      // 2. Server session check
-      const headers: Record<string, string> = {};
-      if (token) {
-        headers["Authorization"] = `Bearer ${token}`;
-      }
-
-      const res = await fetch("/api/auth/me", {
-        method: "GET",
-        headers,
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        if (data.authenticated && data.user) {
-          setSpotifyUser(data.user);
-          fetchUserPlaylists();
-        } else {
-          setSpotifyUser(null);
-          setUserPlaylists([]);
-          if (data.expired) {
-            localStorage.removeItem("spotifyTokenManual");
-            localStorage.removeItem("spotifyTokenManuaL");
-          }
-        }
-      }
-    } catch (err) {
-      console.warn("Error checking auth status:", err);
-    }
-  }, [fetchUserPlaylists]);
-
-  useEffect(() => {
-    checkAuthStatus();
-  }, [checkAuthStatus]);
-
-  // Handle Spotify Connect (Opens comprehensive Spotify Auth Modal)
-  const handleLoginSpotify = () => {
-    setIsSpotifyAuthModalOpen(true);
-  };
-
-  const handleSpotifyLoginSuccess = (user: SpotifyUser) => {
-    setSpotifyUser(user);
-    setIsLoggingIn(false);
-    fetchUserPlaylists();
-    setNeedsAuthNotice(false);
-  };
-
-  // Handle Spotify Logout
-  const handleLogoutSpotify = async () => {
-    localStorage.removeItem("spotifyTokenManual");
-    localStorage.removeItem("spotifyTokenManuaL");
-    try {
-      await fetch("/api/auth/logout", { method: "POST" });
-    } catch (err) {
-      console.warn("Logout error:", err);
-    } finally {
-      setSpotifyUser(null);
-      setUserPlaylists([]);
-    }
-  };
-
-  // Fetch Spotify Playlist via resilient fetcher (Server API with Client Fallback)
-  const loadPlaylist = async (urlOrId: string) => {
-    setIsLoadingPlaylist(true);
-    setPlaylistError(null);
-    setNeedsAuthNotice(false);
-
-    // Utilitário de log: Registra o início do carregamento e os hosts candidatos no console
-    playlistLogger.startLoad(urlOrId, getCandidateBackendUrls());
-
-    try {
-      if (!urlOrId || !urlOrId.trim()) {
-        throw new Error("Por favor, informe o link ou ID da playlist do Spotify.");
-      }
-
-      const token = localStorage.getItem("spotifyTokenManual") || localStorage.getItem("spotifyTokenManuaL");
-      const { data, needsAuth } = await fetchPlaylistSafe(urlOrId, token);
-
-      if (needsAuth) {
-        setNeedsAuthNotice(true);
-      }
-
-      if (!data || !data.sucesso || !data.faixas || data.faixas.length === 0) {
-        const errorDetail = data?.descricao || data?.error || "Não foi possível obter as faixas deste link. Verifique se a playlist é pública ou faça login com o Spotify para acessar playlists privadas.";
-        throw new Error(errorDetail);
-      }
-
-      // Log de sucesso com resumo da playlist
-      playlistLogger.finishLoad(urlOrId, {
-        sucesso: true,
-        totalFaixas: data.total_faixas,
-        nomePlaylist: data.nome_playlist,
-        modo: data.modo,
-      });
-
-      setPlaylistData(data);
-      setTracks(data.faixas || []);
-
-      // If tracks found and nothing currently playing, select first track
-      if (data.faixas && data.faixas.length > 0) {
-        setCurrentTrackIndex(0);
-      }
-    } catch (err: any) {
-      console.error("Error loading playlist:", err);
-
-      // Log detalhado de falha para diagnóstico rápido no console
-      playlistLogger.finishLoad(urlOrId, {
-        sucesso: false,
-        error: err?.message || err,
-      });
-
-      // Limpar a lista atual e zerar dados para evitar confusão visual
-      setPlaylistData(null);
-      setTracks([]);
-      setCurrentTrackIndex(null);
-
-      // Zerar o player completamente até que um link válido seja processado
-      if (ytPlayerRef.current) {
-        try {
-          ytPlayerRef.current.pause();
-          ytPlayerRef.current.seekTo(0);
-        } catch (e) {
-          // ignore
-        }
-      }
-      setPlaybackStatus("paused");
-      setCurrentTime(0);
-      setDuration(0);
-
-      const rawMsg = typeof err === "string" ? err : err?.message || "Não foi possível carregar as músicas deste link. Verifique se a playlist é pública ou conecte sua conta Spotify para playlists privadas.";
-      setPlaylistError(rawMsg);
-    } finally {
-      setIsLoadingPlaylist(false);
-    }
-  };
-
-  // Initial load with default preset
-  useEffect(() => {
-    loadPlaylist("top_hits");
-  }, []);
-
-  // Pre-load the next track's videoId in the background for zero-pause continuous playback
-  const preloadNextTrackVideo = useCallback(async (currentIndex: number) => {
-    const currentTracks = tracksRef.current;
-    if (currentTracks.length <= 1) return;
-    const nextIdx = (currentIndex + 1) % currentTracks.length;
-    const nextTrack = currentTracks[nextIdx];
-    if (nextTrack && !nextTrack.videoId && !nextTrack.isLoadingVideo) {
-      try {
-        const preloadedId = await resolveYouTubeVideoIdClient(
-          nextTrack.nome_musica,
-          nextTrack.nome_artista
-        );
-        if (preloadedId) {
-          setTracks((prev) =>
-            prev.map((t, idx) =>
-              idx === nextIdx ? { ...t, videoId: preloadedId } : t
-            )
-          );
-        }
-      } catch (e) {
-        // silent pre-fetch background catch
-      }
-    }
-  }, []);
-
-  // Resolve YouTube video ID for a specific track and start playback
-  const playTrack = useCallback(async (index: number) => {
-    const currentTracks = tracksRef.current;
-    if (index < 0 || index >= currentTracks.length) return;
-
-    setCurrentTrackIndex(index);
-    currentTrackIndexRef.current = index;
-    const targetTrack = currentTracks[index];
-
-    // Proactively preload the subsequent track in the background for zero-delay playback
-    preloadNextTrackVideo(index);
-
-    // If we already have the YouTube videoId, load and play it immediately
-    if (targetTrack.videoId) {
-      if (ytPlayerRef.current) {
-        ytPlayerRef.current.loadVideo(targetTrack.videoId);
-        ytPlayerRef.current.play();
-      }
-      return;
-    }
-
-    // Otherwise, fetch videoId via resilient resolver
-    setTracks((prev) =>
-      prev.map((t, idx) => (idx === index ? { ...t, isLoadingVideo: true } : t))
-    );
-
-    try {
-      const resolvedVideoId = await resolveYouTubeVideoIdClient(
-        targetTrack.nome_musica,
-        targetTrack.nome_artista,
-        targetTrack.videoId
-      );
-
-      if (resolvedVideoId) {
-        setTracks((prev) =>
-          prev.map((t, idx) =>
-            idx === index
-              ? { ...t, videoId: resolvedVideoId, isLoadingVideo: false }
-              : t
-          )
-        );
-
-        if (ytPlayerRef.current) {
-          ytPlayerRef.current.loadVideo(resolvedVideoId);
-          ytPlayerRef.current.play();
-        }
-
-        // Trigger next track preload as well
-        preloadNextTrackVideo(index);
-      } else {
-        throw new Error("Vídeo não encontrado");
-      }
-    } catch (err) {
-      console.error("Error searching track on YouTube:", err);
-      setTracks((prev) =>
-        prev.map((t, idx) =>
-          idx === index ? { ...t, isLoadingVideo: false, hasError: true } : t
-        )
-      );
-      // Automatically skip to the next track if video resolution fails so the playlist doesn't stall
-      setTimeout(() => {
-        handleNextTrack();
-      }, 600);
-    }
-  }, [preloadNextTrackVideo]);
-
-  // Ao terminar uma musica ja tocar a proxima sem pausa ate tocar todas da playlist
-  const handleNextTrack = useCallback(() => {
-    const currentTracks = tracksRef.current;
-    const currentIndex = currentTrackIndexRef.current;
-    const currentRepeat = repeatModeRef.current;
-    const currentShuffle = shuffleRef.current;
-
-    if (currentTracks.length === 0 || currentIndex === null) return;
-
-    if (currentRepeat === "one") {
-      playTrack(currentIndex);
-      return;
-    }
-
-    if (currentShuffle) {
-      let randomIndex = Math.floor(Math.random() * currentTracks.length);
-      if (currentTracks.length > 1 && randomIndex === currentIndex) {
-        randomIndex = (currentIndex + 1) % currentTracks.length;
-      }
-      playTrack(randomIndex);
-      return;
-    }
-
-    const nextIndex = currentIndex + 1;
-    if (nextIndex < currentTracks.length) {
-      // Continue to the next song in the playlist
-      playTrack(nextIndex);
-    } else {
-      // Reached the end of the playlist: loop back to the start
-      playTrack(0);
-    }
-  }, [playTrack]);
-
-  // Prev Track Logic
-  const handlePrevTrack = useCallback(() => {
-    const currentTracks = tracksRef.current;
-    const currentIndex = currentTrackIndexRef.current;
-    if (currentTracks.length === 0 || currentIndex === null) return;
-
-    if (currentTime > 3) {
-      ytPlayerRef.current?.seekTo(0);
-      return;
-    }
-
-    const prevIndex = currentIndex - 1;
-    if (prevIndex >= 0) {
-      playTrack(prevIndex);
-    } else {
-      playTrack(currentTracks.length - 1);
-    }
-  }, [currentTime, playTrack]);
-
-  // Toggle Play / Pause
-  const handleTogglePlayPause = useCallback(() => {
-    if (currentTrackIndex === null && tracks.length > 0) {
-      playTrack(0);
-      return;
-    }
-
-    const currentTrack = currentTrackIndex !== null ? tracks[currentTrackIndex] : null;
-    if (!currentTrack?.videoId) {
-      if (currentTrackIndex !== null) {
-        playTrack(currentTrackIndex);
-      }
-      return;
-    }
-
-    if (playbackStatus === "playing") {
-      ytPlayerRef.current?.pause();
-    } else {
-      ytPlayerRef.current?.play();
-    }
-  }, [currentTrackIndex, tracks, playbackStatus, playTrack]);
-
-  // Seek
-  const handleSeek = useCallback((seconds: number) => {
-    ytPlayerRef.current?.seekTo(seconds);
-    setCurrentTime(seconds);
-  }, []);
-
-  // Volume
-  const handleVolumeChange = (newVol: number) => {
-    setVolume(newVol);
-    if (isMuted && newVol > 0) setIsMuted(false);
-    ytPlayerRef.current?.setVolume(newVol);
-  };
-
-  const handleToggleMute = () => {
-    if (isMuted) {
-      setIsMuted(false);
-      setVolume(prevVolume || 50);
-      ytPlayerRef.current?.setVolume(prevVolume || 50);
-    } else {
-      setPrevVolume(volume);
-      setIsMuted(true);
-      setVolume(0);
-      ytPlayerRef.current?.setVolume(0);
-    }
-  };
-
-  // Toggle Repeat Mode
-  const handleToggleRepeat = () => {
-    setRepeatMode((prev) => (prev === "off" ? "all" : prev === "all" ? "one" : "off"));
-  };
-
-  const currentTrack = currentTrackIndex !== null ? tracks[currentTrackIndex] || null : null;
-
-  // Background Audio Keep-Alive via inaudible audio loop (keeps OS media keys, background tabs & lock screen active)
-  useEffect(() => {
-    const audio = new Audio();
-    // 1-second inaudible WAV
-    audio.src = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
-    audio.loop = true;
-    audio.volume = 0.001;
-    silentAudioRef.current = audio;
-
-    return () => {
-      audio.pause();
-      audio.src = "";
-    };
-  }, []);
-
-  useEffect(() => {
-    if (playbackStatus === "playing") {
-      silentAudioRef.current?.play().catch(() => {});
-    } else {
-      silentAudioRef.current?.pause();
-    }
-  }, [playbackStatus]);
-
-  // MediaSession API Integration (Official Music Player Lock Screen & OS Media Keys)
-  useEffect(() => {
-    if (!('mediaSession' in navigator)) return;
-
-    if (currentTrack) {
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: currentTrack.nome_musica,
-        artist: currentTrack.nome_artista,
-        album: currentTrack.album || playlistData?.nome_playlist || 'POBREMUSIC',
-        artwork: [
-          { src: currentTrack.capa || '/icon.png', sizes: '512x512', type: 'image/jpeg' },
-          { src: currentTrack.capa || '/icon.png', sizes: '256x256', type: 'image/jpeg' },
-          { src: currentTrack.capa || '/icon.png', sizes: '128x128', type: 'image/jpeg' },
-          { src: currentTrack.capa || '/icon.png', sizes: '96x96', type: 'image/jpeg' },
-        ],
-      });
-    }
-
-    navigator.mediaSession.playbackState = playbackStatus === 'playing' ? 'playing' : 'paused';
-
-    try {
-      navigator.mediaSession.setActionHandler('play', () => handleTogglePlayPause());
-      navigator.mediaSession.setActionHandler('pause', () => handleTogglePlayPause());
-      navigator.mediaSession.setActionHandler('previoustrack', () => handlePrevTrack());
-      navigator.mediaSession.setActionHandler('nexttrack', () => handleNextTrack());
-      navigator.mediaSession.setActionHandler('seekto', (details) => {
-        if (details.seekTime !== undefined) handleSeek(details.seekTime);
-      });
-      navigator.mediaSession.setActionHandler('seekbackward', (details) => {
-        const skip = details.seekOffset || 10;
-        handleSeek(Math.max(currentTime - skip, 0));
-      });
-      navigator.mediaSession.setActionHandler('seekforward', (details) => {
-        const skip = details.seekOffset || 10;
-        handleSeek(Math.min(currentTime + skip, duration));
-      });
-    } catch (err) {
-      console.warn("MediaSession action handler error:", err);
-    }
-  }, [
-    currentTrack, 
-    playbackStatus, 
-    playlistData, 
-    currentTime, 
-    duration, 
-    handleTogglePlayPause, 
-    handlePrevTrack, 
-    handleNextTrack, 
-    handleSeek
-  ]);
-
-  // Update MediaSession Position State
-  useEffect(() => {
-    if (!('mediaSession' in navigator) || !duration || duration <= 0) return;
-    try {
-      if ('setPositionState' in navigator.mediaSession) {
-        navigator.mediaSession.setPositionState({
-          duration: Math.max(duration, 0),
-          playbackRate: 1,
-          position: Math.min(Math.max(currentTime, 0), duration),
-        });
-      }
-    } catch (e) {}
-  }, [currentTime, duration]);
-
-  // Dynamic Browser Tab Title
-  useEffect(() => {
-    if (currentTrack) {
-      const icon = playbackStatus === 'playing' ? '▶' : '⏸';
-      document.title = `${icon} ${currentTrack.nome_musica} • ${currentTrack.nome_artista} | POBREMUSIC`;
-    } else {
-      document.title = 'POBREMUSIC - Player de Música Gratuito';
-    }
-  }, [currentTrack, playbackStatus]);
-
-  // Keyboard Shortcuts (M for mini player, Space for play/pause, Ctrl+Arrows for next/prev)
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement;
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
-        return;
-      }
-
-      if (e.key === 'm' || e.key === 'M') {
-        e.preventDefault();
-        toggleMiniPlayer();
-      } else if (e.code === 'Space') {
-        e.preventDefault();
-        handleTogglePlayPause();
-      } else if (e.key === 'ArrowRight' && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault();
-        handleNextTrack();
-      } else if (e.key === 'ArrowLeft' && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault();
-        handlePrevTrack();
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [toggleMiniPlayer, handleTogglePlayPause, handleNextTrack, handlePrevTrack]);
+  const checkAuthStatus=useCallback(async()=>{
+    try{
+      const token=localStorage.getItem("spotifyTokenManual")||localStorage.getItem("spotifyTokenManuaL");
+      const headers:Record<string,string>={};if(token)headers.Authorization=`Bearer ${token}`;
+      const res=await fetch("/api/auth/me",{headers,credentials:"include",cache:"no-store"});
+      if(!res.ok)return;
+      const data=await res.json();
+      if(data.authenticated&&data.user){setSpotifyUser(data.user);fetchUserPlaylists()}
+      else{setSpotifyUser(null);setUserPlaylists([]);if(data.expired){localStorage.removeItem("spotifyTokenManual");localStorage.removeItem("spotifyTokenManuaL")}}
+    }catch(err){console.warn("Error checking auth status:",err)}
+  },[fetchUserPlaylists]);
+  useEffect(()=>{checkAuthStatus()},[checkAuthStatus]);
+  const handleLoginSpotify=()=>setIsSpotifyAuthModalOpen(true);
+  const handleSpotifyLoginSuccess=(user:SpotifyUser)=>{setSpotifyUser(user);setIsLoggingIn(false);fetchUserPlaylists();setNeedsAuthNotice(false)};
+  const handleLogoutSpotify=async()=>{localStorage.removeItem("spotifyTokenManual");localStorage.removeItem("spotifyTokenManuaL");try{await fetch("/api/auth/logout",{method:"POST",credentials:"include"})}catch{}finally{setSpotifyUser(null);setUserPlaylists([])}};
+  const loadPlaylist=async(urlOrId:string)=>{setIsLoadingPlaylist(true);setPlaylistError(null);setNeedsAuthNotice(false);playlistLogger.startLoad(urlOrId,getCandidateBackendUrls());try{if(!urlOrId.trim())throw new Error("Por favor, informe o link ou ID da playlist do Spotify.");const token=localStorage.getItem("spotifyTokenManual")||localStorage.getItem("spotifyTokenManuaL");const {data,needsAuth}=await fetchPlaylistSafe(urlOrId,token);if(needsAuth)setNeedsAuthNotice(true);if(!data?.sucesso||!data.faixas?.length)throw new Error(data?.descricao||data?.error||"Não foi possível obter as faixas deste link. Conecte sua conta Spotify para playlists privadas.");playlistLogger.finishLoad(urlOrId,{sucesso:true,totalFaixas:data.total_faixas,nomePlaylist:data.nome_playlist,modo:data.modo});setPlaylistData(data);setTracks(data.faixas);setCurrentTrackIndex(0)}catch(err:any){playlistLogger.finishLoad(urlOrId,{sucesso:false,error:err?.message||err});setPlaylistData(null);setTracks([]);setCurrentTrackIndex(null);ytPlayerRef.current?.pause();setPlaylistError(err?.message||"Não foi possível carregar a playlist.")}finally{setIsLoadingPlaylist(false)}};
+  useEffect(()=>{loadPlaylist("top_hits")},[]);
+  const preloadNextTrackVideo=useCallback(async(index:number)=>{const ts=tracksRef.current;if(ts.length<=1)return;const n=(index+1)%ts.length;const t=ts[n];if(t&&!t.videoId&&!t.isLoadingVideo)try{const id=await resolveYouTubeVideoIdClient(t.nome_musica,t.nome_artista);if(id)setTracks(prev=>prev.map((x,i)=>i===n?{...x,videoId:id}:x))}catch{}},[]);
+  const playTrack=useCallback(async(index:number)=>{const ts=tracksRef.current;if(index<0||index>=ts.length)return;setCurrentTrackIndex(index);currentTrackIndexRef.current=index;preloadNextTrackVideo(index);const t=ts[index];if(t.videoId){ytPlayerRef.current?.loadVideo(t.videoId);ytPlayerRef.current?.play();return}setTracks(prev=>prev.map((x,i)=>i===index?{...x,isLoadingVideo:true}:x));try{const id=await resolveYouTubeVideoIdClient(t.nome_musica,t.nome_artista,t.videoId);if(!id)throw new Error("Vídeo não encontrado");setTracks(prev=>prev.map((x,i)=>i===index?{...x,videoId:id,isLoadingVideo:false}:x));ytPlayerRef.current?.loadVideo(id);ytPlayerRef.current?.play();preloadNextTrackVideo(index)}catch(err){setTracks(prev=>prev.map((x,i)=>i===index?{...x,isLoadingVideo:false,hasError:true}:x));setTimeout(()=>handleNextTrack(),600)}},[preloadNextTrackVideo]);
+  const handleNextTrack=useCallback(()=>{const ts=tracksRef.current;const i=currentTrackIndexRef.current;if(!ts.length||i===null)return;if(repeatModeRef.current==="one")return playTrack(i);if(shuffleRef.current){let n=Math.floor(Math.random()*ts.length);if(ts.length>1&&n===i)n=(i+1)%ts.length;return playTrack(n)}playTrack(i+1<ts.length?i+1:0)},[playTrack]);
+  const handlePrevTrack=useCallback(()=>{const ts=tracksRef.current;const i=currentTrackIndexRef.current;if(!ts.length||i===null)return;if(currentTime>3)return ytPlayerRef.current?.seekTo(0);playTrack(i>0?i-1:ts.length-1)},[currentTime,playTrack]);
+  const handleTogglePlayPause=useCallback(()=>{if(currentTrackIndex===null&&tracks.length){playTrack(0);return}const t=currentTrackIndex!==null?tracks[currentTrackIndex]:null;if(!t?.videoId){if(currentTrackIndex!==null)playTrack(currentTrackIndex);return}if(playbackStatus==="playing")ytPlayerRef.current?.pause();else ytPlayerRef.current?.play()},[currentTrackIndex,tracks,playbackStatus,playTrack]);
+  const handleSeek=useCallback((s:number)=>{ytPlayerRef.current?.seekTo(s);setCurrentTime(s)},[]);
+  const handleVolumeChange=(v:number)=>{setVolume(v);if(isMuted&&v>0)setIsMuted(false);ytPlayerRef.current?.setVolume(v)};
+  const handleToggleMute=()=>{if(isMuted){setIsMuted(false);setVolume(prevVolume||50);ytPlayerRef.current?.setVolume(prevVolume||50)}else{setPrevVolume(volume);setIsMuted(true);setVolume(0);ytPlayerRef.current?.setVolume(0)}};
+  const handleToggleRepeat=()=>setRepeatMode(p=>p==="off"?"all":p==="all"?"one":"off");
+  const currentTrack=currentTrackIndex!==null?tracks[currentTrackIndex]||null:null;
+  useEffect(()=>{const audio=new Audio();audio.src="data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";audio.loop=true;audio.volume=.001;silentAudioRef.current=audio;return()=>{audio.pause();audio.src=""}},[]);
+  useEffect(()=>{if(playbackStatus==="playing")silentAudioRef.current?.play().catch(()=>{});else silentAudioRef.current?.pause()},[playbackStatus]);
+  useEffect(()=>{if(!("mediaSession"in navigator))return;if(currentTrack)navigator.mediaSession.metadata=new MediaMetadata({title:currentTrack.nome_musica,artist:currentTrack.nome_artista,album:currentTrack.album||playlistData?.nome_playlist||"POBREMUSIC",artwork:[{src:currentTrack.capa||"/icon.png",sizes:"512x512",type:"image/jpeg"}]});navigator.mediaSession.playbackState=playbackStatus==="playing"?"playing":"paused";try{navigator.mediaSession.setActionHandler("play",()=>handleTogglePlayPause());navigator.mediaSession.setActionHandler("pause",()=>handleTogglePlayPause());navigator.mediaSession.setActionHandler("previoustrack",()=>handlePrevTrack());navigator.mediaSession.setActionHandler("nexttrack",()=>handleNextTrack());navigator.mediaSession.setActionHandler("seekto",d=>{if(d.seekTime!==undefined)handleSeek(d.seekTime)})}catch{}},[currentTrack,playbackStatus,playlistData,currentTime,duration,handleTogglePlayPause,handlePrevTrack,handleNextTrack,handleSeek]);
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col selection:bg-emerald-500 selection:text-white">
-      
-      {/* Mini Player Mode View */}
-      {isMiniPlayerMode ? (
-        <MiniPlayer
-          currentTrack={currentTrack}
-          tracks={tracks}
-          currentTrackIndex={currentTrackIndex}
-          playbackStatus={playbackStatus}
-          currentTime={currentTime}
-          duration={duration}
-          volume={volume}
-          isMuted={isMuted}
-          shuffle={shuffle}
-          repeatMode={repeatMode}
-          onTogglePlayPause={handleTogglePlayPause}
-          onPrevTrack={handlePrevTrack}
-          onNextTrack={handleNextTrack}
-          onSeek={handleSeek}
-          onVolumeChange={handleVolumeChange}
-          onToggleMute={handleToggleMute}
-          onToggleShuffle={() => setShuffle((prev) => !prev)}
-          onToggleRepeat={handleToggleRepeat}
-          onPlayTrack={playTrack}
-          onToggleMiniPlayer={toggleMiniPlayer}
-          onOpenEqualizer={() => setIsEqualizerModalOpen(true)}
-          isEqActive={eqState.enabled}
-          playlistName={playlistData?.nome_playlist}
-        />
-      ) : (
-        /* Full Application View */
-        <div className="flex flex-col flex-1 pb-20 sm:pb-24">
-          {/* Top Navbar */}
-          <Navbar
-            configStatus={configStatus}
-            spotifyUser={spotifyUser}
-            isLoggingIn={isLoggingIn}
-            onLoginSpotify={handleLoginSpotify}
-            onLogoutSpotify={handleLogoutSpotify}
-            googleUser={googleUser}
-            isGoogleLoggingIn={isGoogleLoggingIn}
-            onLoginGoogle={handleLoginGoogle}
-            onLogoutGoogle={handleLogoutGoogle}
-            onOpenConfigModal={() => setIsConfigModalOpen(true)}
-            onToggleMiniPlayer={toggleMiniPlayer}
-            onOpenEqualizerModal={() => setIsEqualizerModalOpen(true)}
-            onOpenMobileDownload={() => setIsMobileDownloadOpen(true)}
-          />
-
-          {/* Main Content */}
-          <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:py-6 space-y-3 sm:space-y-6">
-            
-            {/* Playlist Input & Tabbed Presets / My Playlists / Saved */}
-            <PlaylistInput
-              onLoadPlaylist={loadPlaylist}
-              isLoading={isLoadingPlaylist}
-              currentPlaylistId={playlistData?.playlist_id}
-              spotifyUser={spotifyUser}
-              userPlaylists={userPlaylists}
-              isLoadingUserPlaylists={isLoadingUserPlaylists}
-              onLoginSpotify={handleLoginSpotify}
-              onRefreshUserPlaylists={fetchUserPlaylists}
-              googleUser={googleUser}
-              onLoginGoogle={handleLoginGoogle}
-              savedPlaylists={savedPlaylists}
-              onSelectSavedPlaylist={handleSelectSavedPlaylist}
-              onDeleteSavedPlaylist={handleDeleteSavedPlaylist}
-              onOpenCreateModal={() => setIsCreateModalOpen(true)}
-            />
-
-            {/* Private Playlist Auth Required Notice */}
-            {needsAuthNotice && (
-              <div className="p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-amber-950/60 via-zinc-900 to-zinc-950 border border-amber-500/40 text-amber-200 text-xs sm:text-sm flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xl">
-                <div className="flex items-center gap-3">
-                  <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 shrink-0">
-                    <Lock className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <p className="font-bold text-white">Esta playlist é privada ou restrita</p>
-                    <p className="text-xs text-zinc-300 mt-0.5">
-                      Conecte sua conta do Spotify com o escopo <code className="text-amber-300">playlist-read-private</code> para autorizar a leitura desta playlist.
-                    </p>
-                  </div>
-                </div>
-                <button
-                  onClick={handleLoginSpotify}
-                  disabled={isLoggingIn}
-                  className="px-4 py-2 rounded-xl bg-[#1DB954] hover:bg-[#1ed760] text-zinc-950 font-bold text-xs flex items-center gap-2 shrink-0 shadow-md"
-                >
-                  <LogIn className="w-3.5 h-3.5 stroke-[2.5]" />
-                  <span>{isLoggingIn ? "Conectando..." : "Conectar com Spotify"}</span>
-                </button>
-              </div>
-            )}
-
-            {/* Visual Error Alert: Falha ao ler o link */}
-            {playlistError && !needsAuthNotice && (
-              <div 
-                id="alert-link-failure"
-                className="p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-red-950/90 via-zinc-900 to-zinc-950 border-2 border-red-500/80 text-red-200 text-xs sm:text-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-2xl animate-fade-in"
-              >
-                <div className="flex items-start sm:items-center gap-3.5">
-                  <div className="p-2.5 rounded-xl bg-red-500/20 border border-red-500/40 text-red-400 shrink-0 mt-0.5 sm:mt-0 shadow-sm">
-                    <AlertCircle className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-sm sm:text-base text-white flex items-center gap-2">
-                      Falha ao ler o link
-                    </h3>
-                    <p className="text-xs text-red-200/90 mt-0.5 leading-relaxed">
-                      {playlistError}
-                    </p>
-                    <p className="text-[11px] text-zinc-400 mt-1">
-                      💡 <strong>Dica:</strong> Se a playlist foi criada por você no Spotify, certifique-se de que ela está como <strong>Pública</strong> (no Spotify: toque nos 3 pontinhos &gt; "Tornar Pública") ou toque em <strong>Conectar Spotify</strong> para carregar qualquer playlist privada.
-                    </p>
-                  </div>
-                </div>
-                <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto shrink-0 pt-2 sm:pt-0">
-                  {!spotifyUser && (
-                    <button
-                      type="button"
-                      onClick={handleLoginSpotify}
-                      disabled={isLoggingIn}
-                      className="px-3.5 py-2 rounded-xl bg-[#1DB954] hover:bg-[#1ed760] text-zinc-950 font-bold text-xs flex items-center justify-center gap-1.5 shadow-md transition-all flex-1 sm:flex-none text-center"
-                    >
-                      <LogIn className="w-3.5 h-3.5 stroke-[2.5]" />
-                      <span>{isLoggingIn ? "Conectando..." : "Conectar Spotify"}</span>
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => loadPlaylist("top_hits")}
-                    className="px-3.5 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold border border-zinc-700 transition-all flex-1 sm:flex-none text-center shadow-sm"
-                  >
-                    Destaques
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setIsConfigModalOpen(true)}
-                    className="px-3 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-300 font-semibold text-xs border border-zinc-700 shadow-md transition-all flex-1 sm:flex-none text-center"
-                  >
-                    Ajuda
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Track List Section */}
-            {isLoadingPlaylist ? (
-              <div className="w-full bg-zinc-900/40 border border-zinc-800/80 rounded-2xl p-16 text-center">
-                <Disc3 className="w-12 h-12 text-emerald-400 animate-spin mx-auto mb-3" />
-                <h3 className="text-base font-semibold text-white">Extraindo Faixas do Spotify...</h3>
-                <p className="text-xs text-zinc-400 mt-1">Consultando API do Spotify e estruturando dados em JSON</p>
-              </div>
-            ) : (
-              <TrackList
-                tracks={tracks}
-                currentTrackIndex={currentTrackIndex}
-                isPlaying={playbackStatus === "playing"}
-                onPlayTrack={playTrack}
-                onTogglePlayPause={handleTogglePlayPause}
-                onRemoveTrack={handleRemoveTrack}
-                onRemoveMultipleTracks={handleRemoveMultipleTracks}
-                onOpenSaveModal={() => setIsSaveModalOpen(true)}
-                onOpenCreateModal={() => setIsCreateModalOpen(true)}
-                onOpenAddTrackModal={() => setIsAddTrackModalOpen(true)}
-                onOpenEqualizerModal={() => setIsEqualizerModalOpen(true)}
-                onOpenMobileDownload={() => setIsMobileDownloadOpen(true)}
-                onOpenNowPlaying={() => setIsSpotifyNowPlayingOpen(true)}
-                shuffle={shuffle}
-                onToggleShuffle={() => setShuffle((prev) => !prev)}
-                onPlayShuffle={() => {
-                  setShuffle(true);
-                  if (tracks.length > 0) {
-                    const randomIndex = Math.floor(Math.random() * tracks.length);
-                    playTrack(randomIndex);
-                  }
-                }}
-                playlistName={playlistData?.nome_playlist}
-                playlistCover={playlistData?.capa_playlist}
-                playlistDescription={playlistData?.descricao}
-                playlistNotice={playlistData?.aviso}
-                isPrivate={playlistData?.isPrivate}
-                autenticado={playlistData?.autenticado}
-              />
-            )}
-          </main>
-
-          {/* Persistent Bottom Audio Player Bar */}
-          <AudioPlayerBar
-            currentTrack={currentTrack}
-            playbackStatus={playbackStatus}
-            currentTime={currentTime}
-            duration={duration}
-            volume={volume}
-            isMuted={isMuted}
-            shuffle={shuffle}
-            repeatMode={repeatMode}
-            onTogglePlayPause={handleTogglePlayPause}
-            onPrevTrack={handlePrevTrack}
-            onNextTrack={handleNextTrack}
-            onSeek={handleSeek}
-            onVolumeChange={handleVolumeChange}
-            onToggleMute={handleToggleMute}
-            onToggleShuffle={() => setShuffle((prev) => !prev)}
-            onToggleRepeat={handleToggleRepeat}
-            onOpenEqualizer={() => setIsEqualizerModalOpen(true)}
-            isEqActive={eqState.enabled}
-            onOpenMobileDownload={() => setIsMobileDownloadOpen(true)}
-            onToggleMiniPlayer={toggleMiniPlayer}
-            onOpenNowPlaying={() => setIsSpotifyNowPlayingOpen(true)}
-          />
-        </div>
-      )}
-
-      {/* Spotify-style Fullscreen Now Playing Drawer / View */}
-      <SpotifyNowPlayingView
-        isOpen={isSpotifyNowPlayingOpen}
-        onClose={() => setIsSpotifyNowPlayingOpen(false)}
-        currentTrack={currentTrack}
-        tracks={tracks}
-        currentTrackIndex={currentTrackIndex}
-        playbackStatus={playbackStatus}
-        currentTime={currentTime}
-        duration={duration}
-        volume={volume}
-        isMuted={isMuted}
-        shuffle={shuffle}
-        repeatMode={repeatMode}
-        onTogglePlayPause={handleTogglePlayPause}
-        onPrevTrack={handlePrevTrack}
-        onNextTrack={handleNextTrack}
-        onSeek={handleSeek}
-        onVolumeChange={handleVolumeChange}
-        onToggleMute={handleToggleMute}
-        onToggleShuffle={() => setShuffle((prev) => !prev)}
-        onToggleRepeat={handleToggleRepeat}
-        onPlayTrack={playTrack}
-        onOpenEqualizer={() => setIsEqualizerModalOpen(true)}
-        isEqActive={eqState.enabled}
-        playlistName={playlistData?.nome_playlist}
-      />
-
-      {/* Add Track Search & Select Modal */}
-      <AddTrackModal
-        isOpen={isAddTrackModalOpen}
-        onClose={() => setIsAddTrackModalOpen(false)}
-        onAddTrack={handleAddTrack}
-        onAddMultipleTracks={handleAddMultipleTracks}
-        existingTracksCount={tracks.length}
-      />
-
-      {/* YouTube IFrame Player (Stays mounted continuously to ensure uninterrupted background audio) */}
-      <YouTubeIFrameContainer
-        ref={ytPlayerRef}
-        currentVideoId={currentTrack?.videoId}
-        volume={isMuted ? 0 : volume}
-        onStatusChange={(status) => setPlaybackStatus(status)}
-        onTimeUpdate={(curr, tot) => {
-          setCurrentTime(curr);
-          if (tot > 0) setDuration(tot);
-        }}
-        onTrackEnded={handleNextTrack}
-        onError={(errCode) => {
-          console.warn("YouTube player error:", errCode);
-          handleNextTrack();
-        }}
-      />
-
-      {/* Equalizer Modal */}
-      <EqualizerModal
-        isOpen={isEqualizerModalOpen}
-        onClose={() => setIsEqualizerModalOpen(false)}
-        eqState={eqState}
-        onUpdateEqState={handleUpdateEqState}
-        isPlaying={playbackStatus === "playing"}
-      />
-
-      {/* Save Playlist Modal */}
-      <SavePlaylistModal
-        isOpen={isSaveModalOpen}
-        onClose={() => setIsSaveModalOpen(false)}
-        currentTracks={tracks}
-        initialName={playlistData?.nome_playlist}
-        initialDescription={playlistData?.descricao}
-        initialCover={playlistData?.capa_playlist}
-        onSavePlaylist={handleSavePlaylist}
-      />
-
-      {/* Create Playlist Modal */}
-      <CreatePlaylistModal
-        isOpen={isCreateModalOpen}
-        onClose={() => setIsCreateModalOpen(false)}
-        onCreatePlaylist={handleCreatePlaylist}
-      />
-
-      {/* Mobile Download & PWA Modal */}
-      <MobileDownloadModal
-        isOpen={isMobileDownloadOpen}
-        onClose={() => setIsMobileDownloadOpen(false)}
-        tracks={tracks}
-        playlistName={playlistData?.nome_playlist}
-        onTriggerPWAInstall={handleTriggerPWAInstall}
-        canInstallPWA={canInstallPWA}
-      />
-
-      {/* Spotify Auth & Connection Modal */}
-      <SpotifyAuthModal
-        isOpen={isSpotifyAuthModalOpen}
-        onClose={() => setIsSpotifyAuthModalOpen(false)}
-        onLoginSuccess={handleSpotifyLoginSuccess}
-        configStatus={configStatus}
-      />
-
-      {/* Config Guide & API Documentation Modal */}
-      <ConfigGuideModal
-        isOpen={isConfigModalOpen}
-        onClose={() => setIsConfigModalOpen(false)}
-        configStatus={configStatus}
-      />
-
-      {/* Google Auth Error Modal (Explains domain authorization, popup permissions, etc.) */}
-      <GoogleAuthErrorModal
-        isOpen={!!googleAuthError}
-        onClose={() => setGoogleAuthError(null)}
-        errorInfo={googleAuthError}
-        onRetry={handleLoginGoogle}
-      />
-    </div>
+    <>
+      <Navbar spotifyUser={spotifyUser} onLoginSpotify={handleLoginSpotify} onLogoutSpotify={handleLogoutSpotify} userPlaylists={userPlaylists} onSelectPlaylist={async (p:any)=>loadPlaylist(p.id)} isLoadingPlaylists={isLoadingUserPlaylists} onLoginGoogle={handleLoginGoogle} onLogoutGoogle={handleLogoutGoogle} googleUser={googleUser} onCreatePlaylist={()=>setIsCreateModalOpen(true)} onOpenConfig={()=>setIsConfigModalOpen(true)} />
+      <main className="min-h-screen bg-zinc-950"><PlaylistInput onLoadPlaylist={loadPlaylist} isLoading={isLoadingPlaylist} error={playlistError} needsAuth={needsAuthNotice} onLoginSpotify={handleLoginSpotify}/><TrackList tracks={tracks} currentTrackIndex={currentTrackIndex} playbackStatus={playbackStatus} onPlayTrack={playTrack} onRemoveTrack={handleRemoveTrack} onRemoveMultipleTracks={handleRemoveMultipleTracks} /><AudioPlayerBar currentTrack={currentTrack} playbackStatus={playbackStatus} currentTime={currentTime} duration={duration} volume={volume} isMuted={isMuted} shuffle={shuffle} repeatMode={repeatMode} onTogglePlayPause={handleTogglePlayPause} onNext={handleNextTrack} onPrevious={handlePrevTrack} onSeek={handleSeek} onVolumeChange={handleVolumeChange} onToggleMute={handleToggleMute} onToggleShuffle={()=>setShuffle(p=>!p)} onToggleRepeat={handleToggleRepeat} />
+      <YouTubeIFrameContainer ref={ytPlayerRef} currentVideoId={currentTrack?.videoId} onStatusChange={setPlaybackStatus} onTimeUpdate={(c,d)=>{setCurrentTime(c);setDuration(d)}} onTrackEnded={handleNextTrack} onError={()=>{if(currentTrackIndexRef.current!==null)handleNextTrack()}} volume={isMuted?0:volume}/>
+      {isSpotifyAuthModalOpen&&<SpotifyAuthModal isOpen={isSpotifyAuthModalOpen} onClose={()=>setIsSpotifyAuthModalOpen(false)} onLoginSuccess={handleSpotifyLoginSuccess} configStatus={configStatus}/>} 
+      {isConfigModalOpen&&<ConfigGuideModal isOpen={isConfigModalOpen} onClose={()=>setIsConfigModalOpen(false)} configStatus={configStatus}/>} 
+      {isEqualizerModalOpen&&<EqualizerModal isOpen={isEqualizerModalOpen} onClose={()=>setIsEqualizerModalOpen(false)} state={eqState} onChange={handleUpdateEqState}/>} 
+      {isSaveModalOpen&&<SavePlaylistModal isOpen={isSaveModalOpen} onClose={()=>setIsSaveModalOpen(false)} playlistData={playlistData} tracks={tracks} onSave={handleSavePlaylist}/>} 
+      {isCreateModalOpen&&<CreatePlaylistModal isOpen={isCreateModalOpen} onClose={()=>setIsCreateModalOpen(false)} onCreate={handleCreatePlaylist}/>} 
+      {isAddTrackModalOpen&&<AddTrackModal isOpen={isAddTrackModalOpen} onClose={()=>setIsAddTrackModalOpen(false)} onAddTrack={handleAddTrack} onAddMultipleTracks={handleAddMultipleTracks}/>} 
+      {isSpotifyNowPlayingOpen&&<SpotifyNowPlayingView isOpen={isSpotifyNowPlayingOpen} onClose={()=>setIsSpotifyNowPlayingOpen(false)} currentTrack={currentTrack} spotifyUser={spotifyUser}/>} 
+      {isMobileDownloadOpen&&<MobileDownloadModal isOpen={isMobileDownloadOpen} onClose={()=>setIsMobileDownloadOpen(false)} canInstall={canInstallPWA} onInstall={handleTriggerPWAInstall}/>} 
+      <MobileDownloadBanner onOpen={()=>setIsMobileDownloadOpen(true)} />
+      {googleAuthError&&<GoogleAuthErrorModal error={googleAuthError} onClose={()=>setGoogleAuthError(null)}/>} 
+    </>
   );
 }
