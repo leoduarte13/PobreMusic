@@ -23,6 +23,7 @@ interface Props {
 const BackgroundAudioPlayer = forwardRef<BackgroundAudioPlayerRef, Props>(function BackgroundAudioPlayer({ track, volume, onStatusChange, onTimeUpdate, onEnded, onError }, ref) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const callbacks = useRef({ onStatusChange, onTimeUpdate, onEnded, onError });
+  const requestId = useRef(0);
   useEffect(() => { callbacks.current = { onStatusChange, onTimeUpdate, onEnded, onError }; });
 
   useImperativeHandle(ref, () => ({
@@ -39,34 +40,65 @@ const BackgroundAudioPlayer = forwardRef<BackgroundAudioPlayerRef, Props>(functi
     const audio = audioRef.current;
     if (!audio) return;
     audio.volume = Math.max(0, Math.min(1, volume / 100));
-    if (track?.audioUrl || track?.previewUrl) {
-      const url = track.audioUrl || track.previewUrl || "";
+  }, [volume]);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio || !track) return;
+    let cancelled = false;
+    const currentRequest = ++requestId.current;
+
+    const configureMediaSession = () => {
+      if (!("mediaSession" in navigator) || !("MediaMetadata" in window)) return;
+      try {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: track.nome_musica,
+          artist: track.nome_artista,
+          album: track.album || "PobreMusic",
+          artwork: track.capa ? [{ src: track.capa, sizes: "512x512", type: "image/jpeg" }] : [],
+        });
+        const handlers: [MediaSessionAction, () => void][] = [
+          ["play", () => void audio.play()],
+          ["pause", () => audio.pause()],
+          ["seekbackward", () => { audio.currentTime = Math.max(0, audio.currentTime - 10); }],
+          ["seekforward", () => { audio.currentTime = Math.min(audio.duration || Infinity, audio.currentTime + 10); }],
+          ["previoustrack", () => window.dispatchEvent(new CustomEvent("pobremusic:previous"))],
+          ["nexttrack", () => window.dispatchEvent(new CustomEvent("pobremusic:next"))],
+        ];
+        for (const [action, handler] of handlers) { try { navigator.mediaSession.setActionHandler(action, handler); } catch {} }
+      } catch {}
+    };
+
+    const start = async () => {
+      let url = track.audioUrl || track.previewUrl || "";
+      if (!url) {
+        callbacks.current.onStatusChange("buffering");
+        try {
+          const response = await fetch(`/api/jamendo-search?nome_musica=${encodeURIComponent(track.nome_musica)}&nome_artista=${encodeURIComponent(track.nome_artista)}`, { signal: AbortSignal.timeout(9000) });
+          if (response.ok && response.headers.get("content-type")?.includes("application/json")) {
+            const data = await response.json();
+            if (data?.sucesso && typeof data.audioUrl === "string") url = data.audioUrl;
+          }
+        } catch {}
+      }
+      if (cancelled || currentRequest !== requestId.current || !url) {
+        if (!url && !cancelled) callbacks.current.onError();
+        return;
+      }
+      configureMediaSession();
       if (audio.src !== url) {
         audio.src = url;
         audio.load();
-        void audio.play().catch(() => callbacks.current.onStatusChange("paused"));
       }
-      if ("mediaSession" in navigator && "MediaMetadata" in window) {
-        try {
-          navigator.mediaSession.metadata = new MediaMetadata({
-            title: track.nome_musica,
-            artist: track.nome_artista,
-            album: track.album || "PobreMusic",
-            artwork: track.capa ? [{ src: track.capa, sizes: "512x512", type: "image/jpeg" }] : [],
-          });
-          navigator.mediaSession.playbackState = "playing";
-          const handlers: [string, () => void][] = [
-            ["play", () => void audio.play()],
-            ["pause", () => audio.pause()],
-            ["seekbackward", () => { audio.currentTime = Math.max(0, audio.currentTime - 10); }],
-            ["seekforward", () => { audio.currentTime = Math.min(audio.duration || Infinity, audio.currentTime + 10); }],
-            ["previoustrack", () => window.dispatchEvent(new CustomEvent("pobremusic:previous"))],
-            ["nexttrack", () => window.dispatchEvent(new CustomEvent("pobremusic:next"))],
-          ];
-          handlers.forEach(([action, handler]) => { try { navigator.mediaSession.setActionHandler(action as MediaSessionAction, handler); } catch {} });
-        } catch {}
+      try {
+        await audio.play();
+      } catch {
+        callbacks.current.onStatusChange("paused");
       }
-    }
+    };
+
+    void start();
+    return () => { cancelled = true; audio.pause(); audio.removeAttribute("src"); audio.load(); };
   }, [track?.audioUrl, track?.previewUrl, track?.nome_musica, track?.nome_artista, track?.album, track?.capa]);
 
   useEffect(() => {
