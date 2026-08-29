@@ -2,6 +2,14 @@
   "version": 2,
   "rewrites": [
     {
+      "source": "/auth/spotify/callback",
+      "destination": "/api/index.ts?route=callback"
+    },
+    {
+      "source": "/auth/spotify/callback/",
+      "destination": "/api/index.ts?route=callback"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "/api/index.ts"
     }
