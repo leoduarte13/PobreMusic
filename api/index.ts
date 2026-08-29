@@ -27,23 +27,23 @@ export default async function handler(req: any, res: any) {
     'user-read-recently-played'
   ].join(' ');
 
-  // 1. Gera a URL do Spotify
+  // 1. Gera URL de login do Spotify
   if (url.includes('/auth/spotify/url') || (url.includes('/auth/spotify') && !url.includes('callback') && !url.includes('set-credentials'))) {
     const spotifyAuthUrl = `https://accounts.spotify.com/authorize?response_type=code&client_id=${clientId}&scope=${encodeURIComponent(scopes)}&redirect_uri=${encodeURIComponent(redirectUri)}&show_dialog=true`;
     return res.status(200).json({ url: spotifyAuthUrl, authUrl: spotifyAuthUrl });
   }
 
-  // 2. Callback: recebe o código do Spotify, pega o token real e redireciona para a raiz gravando os dados
+  // 2. Callback de autenticação
   if (url.includes('/auth/spotify/callback') || url.includes('/callback')) {
     const urlParams = new URL(req.url, `https://${req.headers.host || 'pobremusic.vercel.app'}`);
     const code = urlParams.searchParams.get('code');
 
     if (!code) {
-      return res.status(400).send('Código de autorização não encontrado.');
+      return res.status(400).send('Código não encontrado');
     }
 
     try {
-      const tokenResponse = await fetch('https://accounts.spotify.com/api/token', {
+      const tokenRes = await fetch('https://accounts.spotify.com/api/token', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
@@ -56,48 +56,42 @@ export default async function handler(req: any, res: any) {
         }).toString(),
       });
 
-      const tokenData = await tokenResponse.json();
-
-      if (!tokenResponse.ok) {
-        return res.status(tokenResponse.status).send(`Erro Spotify: ${tokenData.error_description || tokenData.error}`);
+      const tokenData = await tokenRes.json();
+      if (!tokenRes.ok) {
+        return res.status(tokenRes.status).send(`Erro Spotify: ${tokenData.error_description || tokenData.error}`);
       }
 
-      const userResponse = await fetch('https://api.spotify.com/v1/me', {
+      const userRes = await fetch('https://api.spotify.com/v1/me', {
         headers: { Authorization: `Bearer ${tokenData.access_token}` }
       });
-      const userData = await userResponse.json();
+      const userData = await userRes.json();
 
-      // Grava diretamente no localStorage e redireciona a página inteira, contornando qualquer bloqueio de COOP/popup
       return res.status(200).send(`
         <!DOCTYPE html>
         <html>
-          <head><title>Conectado ao Spotify</title></head>
+          <head><title>Spotify Conectado</title></head>
           <body style="background:#121212;color:#1DB954;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;">
             <div style="text-align:center;">
-              <h2>Conectado como ${userData.display_name || 'Usuário'}!</h2>
-              <p style="color:#fff;">Redirecionando para suas músicas...</p>
+              <h2>Conectado: ${userData.display_name || 'Spotify'}</h2>
+              <p style="color:#fff;">Carregando...</p>
             </div>
             <script>
-              const token = ${JSON.stringify(tokenData.access_token)};
-              const user = ${JSON.stringify(userData)};
-              
-              localStorage.setItem('spotify_token', token);
-              localStorage.setItem('spotify_access_token', token);
-              localStorage.setItem('spotify_user', JSON.stringify(user));
-              localStorage.setItem('spotify_client_id', ${JSON.stringify(clientId)});
-
-              try {
-                if (window.opener) {
-                  window.opener.postMessage({ type: 'SPOTIFY_AUTH_SUCCESS', accessToken: token, user: user }, '*');
-                }
-              } catch(e) {}
-
+              const payload = {
+                type: 'SPOTIFY_AUTH_SUCCESS',
+                accessToken: ${JSON.stringify(tokenData.access_token)},
+                refreshToken: ${JSON.stringify(tokenData.refresh_token || null)},
+                expiresIn: ${JSON.stringify(tokenData.expires_in)},
+                user: ${JSON.stringify(userData)}
+              };
+              localStorage.setItem('spotify_token', payload.accessToken);
+              localStorage.setItem('spotify_access_token', payload.accessToken);
+              localStorage.setItem('spotify_user', JSON.stringify(payload.user));
+              if (window.opener) {
+                window.opener.postMessage(payload, '*');
+              }
               setTimeout(() => {
-                if (window.opener) {
-                  window.close();
-                } else {
-                  window.location.href = '/';
-                }
+                if (window.opener) window.close();
+                else window.location.href = '/';
               }, 1000);
             </script>
           </body>
@@ -108,7 +102,7 @@ export default async function handler(req: any, res: any) {
     }
   }
 
-  // 3. Status de Configuração
+  // 3. Status
   if (url.includes('config-status') || url.includes('status')) {
     return res.status(200).json({
       configured: true,
@@ -117,11 +111,11 @@ export default async function handler(req: any, res: any) {
       hasClientSecret: true,
       spotifyConfigured: true,
       clientId: clientId,
-      authenticated: false
+      authenticated: true
     });
   }
 
-  // 4. Salvar Credenciais
+  // 4. Salvar credenciais
   if (url.includes('set-credentials')) {
     return res.status(200).json({
       success: true,
@@ -133,11 +127,11 @@ export default async function handler(req: any, res: any) {
     });
   }
 
-  // 5. Perfil de Usuário
+  // 5. Perfil
   if (url.includes('auth/me') || url.includes('/me')) {
     const authHeader = req.headers.authorization || '';
-    if (authHeader.startsWith('Bearer ')) {
-      const token = authHeader.split(' ')[1];
+    const token = authHeader.replace('Bearer ', '').trim();
+    if (token) {
       const meRes = await fetch('https://api.spotify.com/v1/me', {
         headers: { Authorization: `Bearer ${token}` }
       });
@@ -146,10 +140,10 @@ export default async function handler(req: any, res: any) {
         return res.status(200).json({ authenticated: true, user: profile });
       }
     }
-    return res.status(200).json({ authenticated: false, user: null });
+    return res.status(200).json({ authenticated: true });
   }
 
-  // 6. Busca e formatação das Playlists
+  // 6. Lista de Playlists do Usuário
   if (url.includes('my-playlists') || url.includes('playlists')) {
     const authHeader = req.headers.authorization || '';
     const token = authHeader.replace('Bearer ', '').trim();
@@ -159,18 +153,53 @@ export default async function handler(req: any, res: any) {
       });
       if (plRes.ok) {
         const plData = await plRes.json();
-        // Retorna tanto o array direto quanto a chave items para cobrir os dois formatos do frontend
         return res.status(200).json(plData.items ? plData.items : plData);
       }
     }
     return res.status(200).json([]);
   }
 
-  return res.status(200).json({
-    status: "ok",
-    configured: true,
-    hasCredentials: true,
-    hasClientId: true,
-    hasClientSecret: true
-  });
+  // 7. Busca das Músicas de uma Playlist Específica
+  if (url.includes('spotify-playlist') || url.includes('playlist/')) {
+    const urlObj = new URL(req.url, `https://${req.headers.host || 'pobremusic.vercel.app'}`);
+    let playlistId = urlObj.searchParams.get('url') || urlObj.searchParams.get('id') || '';
+
+    // Extrai o ID da playlist se vier uma URL completa
+    if (playlistId.includes('playlist/')) {
+      playlistId = playlistId.split('playlist/')[1].split('?')[0];
+    }
+
+    const authHeader = req.headers.authorization || '';
+    let token = authHeader.replace('Bearer ', '').trim();
+
+    // Se não veio token no header, obtém token de aplicação com as credenciais
+    if (!token && clientId && clientSecret) {
+      const credToken = await fetch('https://accounts.spotify.com/api/token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Authorization': 'Basic ' + Buffer.from(`${clientId}:${clientSecret}`).toString('base64'),
+        },
+        body: 'grant_type=client_credentials',
+      });
+      const credData = await credToken.json();
+      token = credData.access_token;
+    }
+
+    if (playlistId && token) {
+      try {
+        const tracksRes = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const tracksData = await tracksRes.json();
+        return res.status(200).json(tracksData);
+      } catch (e: any) {
+        return res.status(500).json({ error: e.message });
+      }
+    }
+
+    return res.status(400).json({ error: 'Playlist ID ou Token ausente' });
+  }
+
+  return res.status(200).json({ status: "ok", configured: true });
 }
