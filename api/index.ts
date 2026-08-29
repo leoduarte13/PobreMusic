@@ -217,32 +217,126 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
   }
 
-  // 6. BUSCAR ITENS DE UMA PLAYLIST ESPECÍFICA (/playlists/{id}/items)
-  if (url.includes('/playlist') || url.includes('playlistId=') || url.includes('/items')) {
-    // Extrai o ID da playlist da query ou da rota
-    const playlistId = (req.query.playlistId || req.query.id || url.split('/playlist/')[1]?.split('/')[0]?.split('?')[0]) as string;
+  // 6. BUSCAR ITENS DE UMA PLAYLIST ESPECÍFICA
+if (
+  url.includes('/spotify-playlist') ||
+  url.includes('/playlist') ||
+  url.includes('playlistId=') ||
+  url.includes('/items')
+) {
+  const playlistId =
+    (req.query.playlistId ||
+      req.query.id ||
+      req.query.url ||
+      url.split('/playlist/')[1]?.split('/')[0]?.split('?')[0]) as string;
 
-    if (!playlistId) {
-      return res.status(400).json({ error: 'ID da playlist não fornecido.' });
-    }
-
-    try {
-      const token = await getValidAccessToken();
-      const spotifyRes = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=100`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-
-      if (spotifyRes.status === 429) {
-        const retryAfter = spotifyRes.headers.get('retry-after') || '5';
-        return res.status(429).json({ error: `Spotify bloqueou temporariamente. Aguarde ${retryAfter}s.`, retryAfter });
-      }
-
-      const data = await spotifyRes.json();
-      return res.status(spotifyRes.status).json(data);
-    } catch (err: any) {
-      return res.status(500).json({ error: 'Erro ao carregar faixas da playlist', details: err.message });
-    }
+  if (!playlistId) {
+    return res.status(400).json({
+      sucesso: false,
+      error: 'ID da playlist não fornecido.'
+    });
   }
 
-  return res.status(404).json({ error: 'Rota não encontrada na API.' });
-          }
+  try {
+    const token = await getValidAccessToken();
+
+    // Buscar metadados da playlist
+    const playlistRes = await fetch(
+      `https://api.spotify.com/v1/playlists/${encodeURIComponent(
+        playlistId
+      )}?market=BR`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      }
+    );
+
+    if (!playlistRes.ok) {
+      const errorText = await playlistRes.text();
+
+      return res.status(playlistRes.status).json({
+        sucesso: false,
+        error: 'Não foi possível acessar a playlist.',
+        details: errorText
+      });
+    }
+
+    const playlist = await playlistRes.json();
+
+    // Spotify 2026: /items, não /tracks
+    const itemsRes = await fetch(
+      `https://api.spotify.com/v1/playlists/${encodeURIComponent(
+        playlistId
+      )}/items?limit=50&market=BR`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      }
+    );
+
+    if (itemsRes.status === 429) {
+      const retryAfter =
+        itemsRes.headers.get('retry-after') || '5';
+
+      return res.status(429).json({
+        sucesso: false,
+        error: `Spotify bloqueou temporariamente. Aguarde ${retryAfter}s.`,
+        retryAfter
+      });
+    }
+
+    if (!itemsRes.ok) {
+      const errorText = await itemsRes.text();
+
+      return res.status(itemsRes.status).json({
+        sucesso: false,
+        error: 'Não foi possível carregar as músicas da playlist.',
+        details: errorText
+      });
+    }
+
+    const itemsData = await itemsRes.json();
+
+    const faixas = (itemsData.items || [])
+      .map((item: any) => item?.track)
+      .filter((track: any) => track && track.type === 'track')
+      .map((track: any) => ({
+        nome_musica: track.name || 'Sem título',
+        nome_artista:
+          (track.artists || [])
+            .map((artist: any) => artist.name)
+            .join(', ') || 'Artista',
+        album: track.album?.name || 'Álbum',
+        duracao_ms: track.duration_ms || 0,
+        capa:
+          track.album?.images?.[0]?.url || '',
+        spotify_id: track.id,
+        spotify_url:
+          track.external_urls?.spotify ||
+          `https://open.spotify.com/track/${track.id}`
+      }));
+
+    return res.status(200).json({
+      sucesso: true,
+      playlist_id: playlist.id,
+      nome_playlist: playlist.name || 'Playlist Spotify',
+      descricao: playlist.description || '',
+      capa_playlist:
+        playlist.images?.[0]?.url ||
+        faixas[0]?.capa ||
+        '',
+      total_faixas: faixas.length,
+      total_spotify:
+        itemsData.total ?? playlist.items?.total ?? faixas.length,
+      faixas
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      sucesso: false,
+      error: 'Erro ao carregar playlist do Spotify.',
+      details: err?.message || String(err)
+    });
+  }
+}
