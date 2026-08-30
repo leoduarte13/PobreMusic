@@ -19,23 +19,25 @@ export default function App() {
     try { navigator.mediaSession.metadata=new MediaMetadata({title:t.nome_musica,artist:t.nome_artista,album:t.album||playlist?.nome_playlist,artwork:t.capa?[{src:t.capa}]:[]}); navigator.mediaSession.playbackState='paused'; } catch {}
   },[playlist?.nome_playlist]);
 
+  // Stream URLs returned by Piped are signed/temporary. Never trust a URL
+  // stored in localStorage; resolve a fresh audio URL whenever playback starts.
   const resolveAudio=useCallback(async(track:Track)=>{
-    if(track.audioUrl) return track.audioUrl;
     if(!track.videoId) throw new Error('Esta música não foi encontrada.');
-    const r=await fetch(`/api/stream?videoId=${encodeURIComponent(track.videoId)}`,{cache:'no-store'}); const d=await r.json();
-    if(!r.ok||!d.sucesso||!d.url) throw new Error(d.error||'Não foi possível obter o áudio.');
-    setTracks(prev=>prev.map(t=>t.videoId===track.videoId?{...t,audioUrl:d.url,source:'piped',hasError:false}:t));
+    const r=await fetch(`/api/stream?videoId=${encodeURIComponent(track.videoId)}&t=${Date.now()}`,{cache:'no-store'});
+    let d:any={}; try { d=await r.json(); } catch {}
+    if(!r.ok||!d.sucesso||!d.url) throw new Error(d.error||'Não foi possível obter o áudio desta música.');
+    setTracks(prev=>prev.map(t=>t.videoId===track.videoId?{...t,audioUrl:undefined,source:'piped',hasError:false}:t));
     return d.url as string;
   },[]);
 
   const playIndex=useCallback(async(next:number,autoplay=true)=>{
     const list=tracksRef.current; if(next<0||next>=list.length||!list[next]?.videoId) return;
-    const token=++playToken.current; const t=list[next]; setIndex(next); indexRef.current=next; setTime(0); setDuration((t.duracao_ms||0)/1000); updateMediaSession(t);
+    const token=++playToken.current; const t=list[next]; setError(''); setIndex(next); indexRef.current=next; setTime(0); setDuration((t.duracao_ms||0)/1000); updateMediaSession(t);
     const audio=audioRef.current; if(!audio)return;
     try {
       setStatus('buffering');
       const src=await resolveAudio(t); if(token!==playToken.current)return;
-      audio.pause(); audio.src=src; audio.load();
+      audio.pause(); audio.removeAttribute('src'); audio.load(); audio.src=src; audio.load();
       if(autoplay){ await audio.play(); setStatus('playing'); try{navigator.mediaSession.playbackState='playing'}catch{} } else { setStatus('paused'); try{navigator.mediaSession.playbackState='paused'}catch{} }
     } catch(e:any) { if(token!==playToken.current)return; setStatus('error'); setError(e?.message||'Não foi possível reproduzir esta música.'); }
   },[resolveAudio,updateMediaSession]);
@@ -51,24 +53,27 @@ export default function App() {
     const onTime=()=>{setTime(audio.currentTime||0);if(Number.isFinite(audio.duration)&&audio.duration>0)setDuration(audio.duration)};
     const onLoaded=()=>{if(Number.isFinite(audio.duration)&&audio.duration>0)setDuration(audio.duration)};
     const onEnded=()=>{setStatus('ended');nextTrack()};
-    const onError=()=>setStatus('error');
+    const onError=()=>{const code=audio.error?.code||0;setStatus('error');setError(code===2?'A fonte de áudio não respondeu. Toque em reproduzir para tentar novamente.':'A fonte de áudio não pôde ser reproduzida. Toque em reproduzir para tentar novamente.');};
     audio.addEventListener('play',onPlay);audio.addEventListener('pause',onPause);audio.addEventListener('waiting',onWaiting);audio.addEventListener('timeupdate',onTime);audio.addEventListener('loadedmetadata',onLoaded);audio.addEventListener('ended',onEnded);audio.addEventListener('error',onError);
-    return()=>{audio.pause();audio.src='';audio.removeEventListener('play',onPlay);audio.removeEventListener('pause',onPause);audio.removeEventListener('waiting',onWaiting);audio.removeEventListener('timeupdate',onTime);audio.removeEventListener('loadedmetadata',onLoaded);audio.removeEventListener('ended',onEnded);audio.removeEventListener('error',onError);audioRef.current=null};
+    return()=>{audio.pause();audio.removeAttribute('src');audio.load();audio.removeEventListener('play',onPlay);audio.removeEventListener('pause',onPause);audio.removeEventListener('waiting',onWaiting);audio.removeEventListener('timeupdate',onTime);audio.removeEventListener('loadedmetadata',onLoaded);audio.removeEventListener('ended',onEnded);audio.removeEventListener('error',onError);audioRef.current=null};
   },[nextTrack]);
 
   useEffect(()=>{const a=audioRef.current;if(a)a.volume=muted?0:volume/100},[volume,muted]);
-  useEffect(()=>{if(!('mediaSession'in navigator))return;const ms=navigator.mediaSession;const safe=(name:any,fn:any)=>{try{ms.setActionHandler(name,fn)}catch{}};safe('play',()=>audioRef.current?.play());safe('pause',()=>audioRef.current?.pause());safe('nexttrack',nextTrack);safe('previoustrack',prevTrack);safe('seekbackward',()=>{const a=audioRef.current;if(a)a.currentTime=Math.max(0,a.currentTime-10)});safe('seekforward',()=>{const a=audioRef.current;if(a)a.currentTime=Math.min(a.duration||Infinity,a.currentTime+10)});safe('seekto',(details:any)=>{const a=audioRef.current;if(a&&details.seekTime!=null)a.currentTime=details.seekTime});return()=>{['play','pause','nexttrack','previoustrack','seekbackward','seekforward','seekto'].forEach(n=>{try{ms.setActionHandler(n as any,null)}catch{}})}} ,[nextTrack,prevTrack]);
-  useEffect(()=>{try{localStorage.setItem('pobremusic_state',JSON.stringify({url,playlist,tracks,index}))}catch{}},[url,playlist,tracks,index]);
-  useEffect(()=>{try{const saved=JSON.parse(localStorage.getItem('pobremusic_state')||'null');if(saved?.tracks?.length){setUrl(saved.url||'');setPlaylist(saved.playlist);setTracks(saved.tracks);setIndex(saved.index??null);indexRef.current=saved.index??null}}catch{}},[]);
+  useEffect(()=>{if(!('mediaSession'in navigator))return;const ms=navigator.mediaSession;const safe=(name:any,fn:any)=>{try{ms.setActionHandler(name,fn)}catch{}};safe('play',()=>{const cur=indexRef.current;if(cur!==null)playIndex(cur,true)});safe('pause',()=>audioRef.current?.pause());safe('nexttrack',nextTrack);safe('previoustrack',prevTrack);safe('seekbackward',()=>{const a=audioRef.current;if(a)a.currentTime=Math.max(0,a.currentTime-10)});safe('seekforward',()=>{const a=audioRef.current;if(a)a.currentTime=Math.min(a.duration||Infinity,a.currentTime+10)});safe('seekto',(details:any)=>{const a=audioRef.current;if(a&&details.seekTime!=null)a.currentTime=details.seekTime});return()=>{['play','pause','nexttrack','previoustrack','seekbackward','seekforward','seekto'].forEach(n=>{try{ms.setActionHandler(n as any,null)}catch{}})}} ,[nextTrack,prevTrack,playIndex]);
+
+  // Do not persist signed audio URLs. They expire and caused imported songs to
+  // appear correctly while silently failing to play after a reload.
+  useEffect(()=>{try{const safeTracks=tracks.map(({audioUrl,...t})=>t);localStorage.setItem('pobremusic_state',JSON.stringify({url,playlist,tracks:safeTracks,index}))}catch{}},[url,playlist,tracks,index]);
+  useEffect(()=>{try{const saved=JSON.parse(localStorage.getItem('pobremusic_state')||'null');if(saved?.tracks?.length){const safeTracks=saved.tracks.map((t:Track)=>({...t,audioUrl:undefined}));setUrl(saved.url||'');setPlaylist(saved.playlist);setTracks(safeTracks);setIndex(saved.index??null);indexRef.current=saved.index??null}}catch{}},[]);
 
   const importPlaylist=async()=>{
     setError('');setLoading(true);setResolveProgress(0);setTracks([]);setIndex(null);indexRef.current=null;setStatus('unstarted');
     try{if(!parseSpotifyId(url))throw new Error('Cole o link de uma playlist pública do Spotify.');const r=await fetch(`/api/public-playlist?url=${encodeURIComponent(url)}`,{cache:'no-store'});const d:PlaylistData=await r.json();if(!r.ok||!d.sucesso)throw new Error(d.error||'Não foi possível importar a playlist.');setPlaylist(d);
-      const base=d.faixas||[];const resolved:Track[]=[...base];let done=0;for(let i=0;i<resolved.length;i+=4){const batch=resolved.slice(i,i+4);await Promise.all(batch.map(async(t,j)=>{try{const rr=await fetch(`/api/search?nome_musica=${encodeURIComponent(t.nome_musica)}&nome_artista=${encodeURIComponent(t.nome_artista)}`,{cache:'no-store'});const x=await rr.json();if(rr.ok&&x.videoId)resolved[i+j]={...t,videoId:x.videoId,videoTitle:x.titulo};else resolved[i+j]={...t,hasError:true};}catch{resolved[i+j]={...t,hasError:true};}finally{done++;setResolveProgress(Math.round(done/base.length*100));}}));setTracks([...resolved]);}
-      setTracks(resolved);const first=resolved.findIndex(t=>!!t.videoId);if(first>=0)playIndex(first,false);
+      const base=d.faixas||[];const resolved:Track[]=[...base];let done=0;for(let i=0;i<resolved.length;i+=4){const batch=resolved.slice(i,i+4);await Promise.all(batch.map(async(t,j)=>{try{const rr=await fetch(`/api/search?nome_musica=${encodeURIComponent(t.nome_musica)}&nome_artista=${encodeURIComponent(t.nome_artista)}`,{cache:'no-store'});const x=await rr.json();if(rr.ok&&x.videoId)resolved[i+j]={...t,videoId:x.videoId,videoTitle:x.titulo,audioUrl:undefined};else resolved[i+j]={...t,hasError:true};}catch{resolved[i+j]={...t,hasError:true};}finally{done++;setResolveProgress(Math.round(done/base.length*100));}}));setTracks([...resolved]);}
+      setTracks(resolved);const first=resolved.findIndex(t=>!!t.videoId);if(first>=0){setIndex(first);indexRef.current=first;setStatus('paused');}
     }catch(e:any){setError(e?.message||'Erro ao importar playlist.')}finally{setLoading(false)}
   };
-  const playPause=()=>{const a=audioRef.current;if(index===null){const first=tracks.findIndex(t=>t.videoId);if(first>=0)playIndex(first,true);return;}if(status==='playing')a?.pause();else a?.play().catch(()=>playIndex(index,true));};
+  const playPause=()=>{const first=tracks.findIndex(t=>t.videoId);if(index===null){if(first>=0)playIndex(first,true);return;}if(status==='playing')audioRef.current?.pause();else playIndex(index,true);};
   const changeVolume=(v:number)=>{setVolume(v);setMuted(v===0)}; const seek=(v:number)=>{const a=audioRef.current;if(a){a.currentTime=v;setTime(v)}}; const current=index!==null?tracks[index]:null;
 
   return <div className="app"><header><div className="brand"><div className="brandIcon">♫</div><div><strong>PobreMusic</strong><span>Spotify Playlist Player</span></div></div></header>
