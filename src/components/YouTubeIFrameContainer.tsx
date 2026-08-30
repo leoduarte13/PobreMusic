@@ -69,6 +69,11 @@ export const YouTubeIFrameContainer = forwardRef<YouTubePlayerRef, Props>(
       const n = Date.now();
       if (n - lastEnded.current < 1200) return;
       lastEnded.current = n;
+      console.log("[PobreMusic YouTube Player] Track 'ended' fired", {
+        visibilityState: typeof document !== "undefined" ? document.visibilityState : "unknown",
+        timestamp: new Date().toISOString(),
+        videoId: loaded.current,
+      });
       callbacks.current.onStatusChange("ended");
       callbacks.current.onTrackEnded();
     };
@@ -94,6 +99,10 @@ export const YouTubeIFrameContainer = forwardRef<YouTubePlayerRef, Props>(
           events: {
             onReady: (e: any) => {
               setReady(true);
+              console.log("[PobreMusic YouTube Player] Player onReady", {
+                videoId: currentVideoId,
+                visibilityState: typeof document !== "undefined" ? document.visibilityState : "unknown",
+              });
               e.target.setVolume(volume);
               if (currentVideoId) {
                 loaded.current = currentVideoId;
@@ -101,11 +110,32 @@ export const YouTubeIFrameContainer = forwardRef<YouTubePlayerRef, Props>(
               }
             },
             onStateChange: (e: any) => {
+              const stateNames: Record<number, string> = {
+                "-1": "unstarted",
+                0: "ended",
+                1: "playing",
+                2: "paused",
+                3: "buffering",
+                5: "cued",
+              };
+              const stateName = stateNames[e.data] || `unknown(${e.data})`;
+              const visibility = typeof document !== "undefined" ? document.visibilityState : "unknown";
+
+              console.log(`[PobreMusic YouTube Player] State Changed -> ${stateName} (${e.data})`, {
+                visibilityState: visibility,
+                isScreenHidden: visibility === "hidden",
+                videoId: loaded.current,
+                timestamp: new Date().toISOString(),
+              });
+
               if (e.data === 1) {
                 setPlaying(true);
                 callbacks.current.onStatusChange("playing");
               } else if (e.data === 2) {
                 setPlaying(false);
+                if (visibility === "hidden") {
+                  console.warn("[PobreMusic YouTube Player] ATTENTION: YouTube iframe was PAUSED by the browser while screen/tab is in background/hidden!");
+                }
                 callbacks.current.onStatusChange("paused");
               } else if (e.data === 3) {
                 callbacks.current.onStatusChange("buffering");
@@ -119,7 +149,13 @@ export const YouTubeIFrameContainer = forwardRef<YouTubePlayerRef, Props>(
                 callbacks.current.onStatusChange("unstarted");
               }
             },
-            onError: (e: any) => callbacks.current.onError(e.data),
+            onError: (e: any) => {
+              console.error(`[PobreMusic YouTube Player] Error Code: ${e.data}`, {
+                videoId: loaded.current,
+                visibilityState: typeof document !== "undefined" ? document.visibilityState : "unknown",
+              });
+              callbacks.current.onError(e.data);
+            },
           },
         });
       };
@@ -144,8 +180,57 @@ export const YouTubeIFrameContainer = forwardRef<YouTubePlayerRef, Props>(
         }
       }, 800);
 
+      // Track Document and Window suspension / power-saving lifecycle events
+      const handleVisibilityChange = () => {
+        const visibility = document.visibilityState;
+        const playerState = playerRef.current?.getPlayerState?.();
+        console.warn(`[PobreMusic YouTube Player Lifecycle] Document 'visibilitychange' -> ${visibility}`, {
+          playerState,
+          videoId: loaded.current,
+          ready,
+          timestamp: new Date().toISOString(),
+          note: visibility === "hidden" ? "Screen locked or tab sent to background" : "Screen active / foreground"
+        });
+      };
+
+      const handlePageHide = (e: PageTransitionEvent) => {
+        console.warn(`[PobreMusic YouTube Player Lifecycle] Document/Window 'pagehide' fired`, {
+          persisted: e.persisted,
+          videoId: loaded.current,
+          timestamp: new Date().toISOString(),
+          note: "Browser may freeze JS execution or discard iframe execution pipeline"
+        });
+      };
+
+      const handlePageShow = (e: PageTransitionEvent) => {
+        console.log(`[PobreMusic YouTube Player Lifecycle] Document/Window 'pageshow' fired`, {
+          persisted: e.persisted,
+          videoId: loaded.current,
+          timestamp: new Date().toISOString()
+        });
+      };
+
+      const handleFreeze = () => {
+        console.warn(`[PobreMusic YouTube Player Lifecycle] Window 'freeze' event fired! (DOM / JS execution suspended by OS/Browser)`);
+      };
+
+      const handleResume = () => {
+        console.log(`[PobreMusic YouTube Player Lifecycle] Window 'resume' event fired (DOM / JS execution resumed).`);
+      };
+
+      document.addEventListener("visibilitychange", handleVisibilityChange);
+      window.addEventListener("pagehide", handlePageHide);
+      window.addEventListener("pageshow", handlePageShow);
+      window.addEventListener("freeze", handleFreeze);
+      window.addEventListener("resume", handleResume);
+
       return () => {
         if (timer.current) clearInterval(timer.current);
+        document.removeEventListener("visibilitychange", handleVisibilityChange);
+        window.removeEventListener("pagehide", handlePageHide);
+        window.removeEventListener("pageshow", handlePageShow);
+        window.removeEventListener("freeze", handleFreeze);
+        window.removeEventListener("resume", handleResume);
         playerRef.current?.destroy?.();
         playerRef.current = null;
       };
@@ -171,15 +256,27 @@ export const YouTubeIFrameContainer = forwardRef<YouTubePlayerRef, Props>(
       <>
         <div
           className="fixed z-[70]"
-          style={{
-            width: preview ? (expanded ? 620 : 420) : 280,
-            height: preview ? "auto" : 160,
-            opacity: preview ? 1 : 0.01,
-            pointerEvents: preview ? "auto" : "none",
-            right: preview ? 24 : -9999,
-            bottom: preview ? 90 : -9999,
-            overflow: "hidden",
-          }}
+          style={
+            preview
+              ? {
+                  width: expanded ? 620 : 420,
+                  maxWidth: "92vw",
+                  height: "auto",
+                  opacity: 1,
+                  pointerEvents: "auto",
+                  right: 16,
+                  bottom: 90,
+                }
+              : {
+                  width: 2,
+                  height: 2,
+                  opacity: 0.005,
+                  pointerEvents: "none",
+                  left: 0,
+                  bottom: 0,
+                  overflow: "hidden",
+                }
+          }
           aria-hidden={!preview}
         >
           <div className="rounded-2xl overflow-hidden bg-zinc-950 border border-zinc-700 shadow-2xl">

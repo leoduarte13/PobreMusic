@@ -293,7 +293,7 @@ function parseSpotifyResource(input: string): { id: string; type: "playlist" | "
   // - https://open.spotify.com/user/USER_ID/playlist/ID
   // - https://open.spotify.com/album/ID
   // - https://open.spotify.com/track/ID
-  const urlMatch = trimmed.match(/(?:user\/[^\/]+\/)?(?:intl-[a-z-]+\/)?(playlist|album|track)\/([a-zA-Z0-9]{10,40})/i);
+  const urlMatch = trimmed.match(/(?:intl-[a-z0-9-]+\/)?(?:user\/[^\/]+\/)?(playlist|album|track)\/([a-zA-Z0-9]{10,40})/i);
   if (urlMatch && urlMatch[1] && urlMatch[2]) {
     return {
       type: urlMatch[1].toLowerCase() as "playlist" | "album" | "track",
@@ -323,7 +323,6 @@ function extractPlaylistId(input: string): string {
  * Robust extraction of real tracks from Spotify Embed HTML (zero credentials required)
  */
 async function extractFromSpotifyEmbed(type: "playlist" | "album" | "track", id: string) {
-  // Types to attempt in order (if primary type returns nothing, try other types)
   const typesToTry: ("playlist" | "album" | "track")[] = [type];
   if (type !== "playlist") typesToTry.push("playlist");
   if (type !== "album") typesToTry.push("album");
@@ -336,7 +335,7 @@ async function extractFromSpotifyEmbed(type: "playlist" | "album" | "track", id:
         headers: {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
           "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-          "Accept-Language": "en-US,en;q=0.9,pt-BR;q=0.8",
+          "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
         },
       });
 
@@ -345,7 +344,7 @@ async function extractFromSpotifyEmbed(type: "playlist" | "album" | "track", id:
       }
 
       const html = await res.text();
-      const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">([^<]+)<\/script>/);
+      const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/);
       if (!match || !match[1]) continue;
 
       const data = JSON.parse(match[1]);
@@ -377,7 +376,7 @@ async function extractFromSpotifyEmbed(type: "playlist" | "album" | "track", id:
         if (!nomeArtista && tr.artist) {
           nomeArtista = typeof tr.artist === "string" ? tr.artist : tr.artist.name || "";
         }
-        if (!nomeArtista) nomeArtista = "Artista Desconhecido";
+        if (!nomeArtista) nomeArtista = "Artista";
 
         const duracaoMs = tr.duration || tr.duration_ms || tr.maxDuration || 200000;
         const album = currentType === "album" ? playlistName : (tr.album?.name || playlistName);
@@ -1446,59 +1445,74 @@ app.all("/api/search-tracks", async (req, res) => {
       }
     }
 
-    // 2. If YouTube API Key configured and we need more or primary results
-    const youtubeApiKey = process.env.YOUTUBE_API_KEY;
-    if (results.length === 0 && youtubeApiKey) {
+    // 2. Innertube YouTube Music Search (100% accurate, no API key required)
+    if (results.length === 0) {
       try {
-        const ytUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoCategoryId=10&maxResults=10&q=${encodeURIComponent(query + " music")}&key=${youtubeApiKey}`;
-        const ytRes = await fetch(ytUrl);
-        if (ytRes.ok) {
-          const ytData = await ytRes.json();
-          for (const item of ytData.items || []) {
-            results.push({
-              nome_musica: item.snippet?.title?.replace(/(\(Official.*?\)|\[Official.*?\]|Official Audio|Official Video)/gi, "").trim() || query,
-              nome_artista: item.snippet?.channelTitle?.replace(/ - Topic|VEVO/g, "").trim() || "YouTube Music",
-              album: "YouTube Music",
-              duracao_ms: 210000,
-              capa: item.snippet?.thumbnails?.high?.url || item.snippet?.thumbnails?.medium?.url || "",
-              videoId: item.id.videoId,
-              origem: "youtube",
-            });
+        const innertubeRes = await fetch("https://www.youtube.com/youtubei/v1/search", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          },
+          body: JSON.stringify({
+            query: `${query} music audio`,
+            context: {
+              client: {
+                clientName: "WEB",
+                clientVersion: "2.20230509.01.00",
+                hl: "pt",
+                gl: "BR",
+              },
+            },
+          }),
+        });
+
+        if (innertubeRes.ok) {
+          const ytData: any = await innertubeRes.json();
+          const sectionList = ytData.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents || [];
+          for (const sec of sectionList) {
+            const items = sec.itemSectionRenderer?.contents || [];
+            for (const item of items) {
+              if (item.videoRenderer?.videoId) {
+                const v = item.videoRenderer;
+                const rawTitle = v.title?.runs?.[0]?.text || v.title?.simpleText || query;
+                const cleanTitle = rawTitle.replace(/(\(Official.*?\)|\[Official.*?\]|Official Music Video|Official Audio|Clipe Oficial|Áudio Oficial)/gi, "").trim();
+                const channel = v.ownerText?.runs?.[0]?.text?.replace(/ - Topic|VEVO/g, "").trim() || "Música";
+                const thumb = v.thumbnail?.thumbnails?.[v.thumbnail.thumbnails.length - 1]?.url || "";
+                const durText = v.lengthText?.simpleText || "3:30";
+                const parts = durText.split(":").map(Number);
+                const durMs = parts.length === 2 ? (parts[0] * 60 + parts[1]) * 1000 : 210000;
+
+                results.push({
+                  nome_musica: cleanTitle || rawTitle,
+                  nome_artista: channel,
+                  album: "YouTube Music",
+                  duracao_ms: durMs,
+                  capa: thumb,
+                  videoId: v.videoId,
+                  origem: "youtube",
+                });
+              }
+            }
           }
         }
       } catch (ytErr) {
-        console.warn("YouTube search tracks error:", ytErr);
+        console.warn("Innertube track search error:", ytErr);
       }
     }
 
-    // 3. If no results yet, provide smart search results
+    // 3. Fallback search check
     if (results.length === 0) {
-      // Check preset songs or smart match
-      const matchingPresets: any[] = [];
-      Object.values(PRESET_PLAYLISTS).forEach((pl: any) => {
-        pl.tracks.forEach((t: any) => {
-          if (
-            t.nome_musica.toLowerCase().includes(query.toLowerCase()) ||
-            t.nome_artista.toLowerCase().includes(query.toLowerCase())
-          ) {
-            matchingPresets.push({ ...t, origem: "preset" });
-          }
-        });
-      });
-
-      if (matchingPresets.length > 0) {
-        results.push(...matchingPresets);
-      } else {
-        // Fallback item with smart resolution
-        const fallback = await fallbackYouTubeSearch(query);
+      const fallback = await fallbackYouTubeSearch(query);
+      if (fallback?.videoId) {
         results.push({
-          nome_musica: query,
-          nome_artista: fallback?.channelTitle || "Música / Artista",
-          album: "Single",
-          duracao_ms: 200000,
+          nome_musica: fallback.title || query,
+          nome_artista: fallback.channelTitle || "Música / Artista",
+          album: "YouTube Music",
+          duracao_ms: 210000,
           capa: "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&auto=format&fit=crop&q=80",
-          videoId: fallback?.videoId || "4NRXx6U8ABQ",
-          origem: "smart_search",
+          videoId: fallback.videoId,
+          origem: "youtube",
         });
       }
     }

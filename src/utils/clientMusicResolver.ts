@@ -190,15 +190,7 @@ export async function searchMusicTracksClient(query: string): Promise<TrackSearc
   const q = query.trim();
   if (!q) return [];
 
-  // Try Audius first
-  try {
-    const d = await audiusRequest(`?q=${encodeURIComponent(q)}`);
-    if (Array.isArray(d?.tracks) && d.tracks.length > 0) {
-      return d.tracks;
-    }
-  } catch {}
-
-  // Fallback to /api/search-tracks
+  // 1. Query server search-tracks endpoint (Spotify API + Innertube YouTube Music)
   const candidateUrls = getCandidateBackendUrls();
   for (const base of candidateUrls) {
     try {
@@ -215,41 +207,61 @@ export async function searchMusicTracksClient(query: string): Promise<TrackSearc
     } catch {}
   }
 
-  return [];
-}
+  // 2. Direct client-side Innertube Search fallback
+  try {
+    const directRes = await fetch("https://www.youtube.com/youtubei/v1/search", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query: `${q} music audio`,
+        context: {
+          client: {
+            clientName: "WEB",
+            clientVersion: "2.20230509.01.00",
+            hl: "pt",
+            gl: "BR",
+          },
+        },
+      }),
+      signal: AbortSignal.timeout(6000),
+    });
 
-async function enrichWithAudius(tracks: Track[]): Promise<Track[]> {
-  const result = [...tracks];
-  let cursor = 0;
-  const worker = async () => {
-    while (cursor < result.length) {
-      const i = cursor++;
-      const t = result[i];
-      try {
-        const m = await resolveAudiusTrack(t.nome_musica, t.nome_artista);
-        if (m && m.audioUrl) {
-          const score = matchScore(m, t.nome_musica, t.nome_artista);
-          if (score >= 60) {
-            result[i] = {
-              ...t,
-              audioUrl: m.audioUrl,
-              origem: "audius",
-              audius_id: m.audius_id,
-              sourceUrl: m.sourceUrl,
-              isStreamable: true,
-            };
-            continue;
+    if (directRes.ok) {
+      const data: any = await directRes.json();
+      const sectionList = data.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents || [];
+      const tracks: TrackSearchResult[] = [];
+      for (const sec of sectionList) {
+        const items = sec.itemSectionRenderer?.contents || [];
+        for (const item of items) {
+          if (item.videoRenderer?.videoId) {
+            const v = item.videoRenderer;
+            const rawTitle = v.title?.runs?.[0]?.text || v.title?.simpleText || q;
+            const cleanTitle = rawTitle.replace(/(\(Official.*?\)|\[Official.*?\]|Official Music Video|Official Audio|Clipe Oficial|Áudio Oficial)/gi, "").trim();
+            const channel = v.ownerText?.runs?.[0]?.text?.replace(/ - Topic|VEVO/g, "").trim() || "Música";
+            const thumb = v.thumbnail?.thumbnails?.[v.thumbnail.thumbnails.length - 1]?.url || "";
+            const durText = v.lengthText?.simpleText || "3:30";
+            const parts = durText.split(":").map(Number);
+            const durMs = parts.length === 2 ? (parts[0] * 60 + parts[1]) * 1000 : 210000;
+
+            tracks.push({
+              nome_musica: cleanTitle || rawTitle,
+              nome_artista: channel,
+              album: "YouTube Music",
+              duracao_ms: durMs,
+              capa: thumb,
+              videoId: v.videoId,
+              origem: "youtube",
+            });
           }
         }
-      } catch {}
-      // Keep track playable via YouTube or audio preview
-      result[i] = { ...t, origem: "spotify", isStreamable: true };
+      }
+      if (tracks.length > 0) return tracks;
     }
-  };
+  } catch {}
 
-  // Run up to 4 parallel resolution tasks
-  await Promise.all([worker(), worker(), worker(), worker()]);
-  return result;
+  return [];
 }
 
 export async function fetchPlaylistSafe(urlOrId: string, spotifyToken?: string | null): Promise<{ data: PlaylistData; needsAuth?: boolean }> {
@@ -335,7 +347,7 @@ export async function fetchPlaylistSafe(urlOrId: string, spotifyToken?: string |
           if (d?.sucesso && Array.isArray(d.faixas) && d.faixas.length > 0) {
             const normalizedFaixas: Track[] = d.faixas.map((t: any) => ({
               ...t,
-              origem: t.audioUrl ? "audius" : "spotify",
+              origem: "spotify",
               isStreamable: true,
             }));
 
@@ -344,7 +356,7 @@ export async function fetchPlaylistSafe(urlOrId: string, spotifyToken?: string |
               faixas: normalizedFaixas,
               total_faixas: normalizedFaixas.length,
               modo: d.modo || "spotify_embed_extractor",
-              aviso: "Playlist carregada com sucesso. Reprodução contínua pronta!",
+              aviso: "Playlist carregada com sucesso!",
             };
 
             // Cache in local storage for offline access
@@ -359,21 +371,31 @@ export async function fetchPlaylistSafe(urlOrId: string, spotifyToken?: string |
       }
     }
 
-    if (lastError) {
-      console.warn("[POBREMUSIC] Aviso na carga de playlist:", lastError);
-    }
+    // If it was explicitly a Spotify link/ID and failed, return an honest error rather than returning random songs!
+    return {
+      data: {
+        sucesso: false,
+        playlist_id: value,
+        nome_playlist: "Playlist não encontrada",
+        descricao: "Não foi possível carregar as faixas deste link do Spotify. Verifique se o link está correto ou se a playlist é pública.",
+        total_faixas: 0,
+        faixas: [],
+        modo: "error",
+        error: "Playlist do Spotify não encontrada ou inacessível.",
+      },
+    };
   }
 
-  // 3. Search query fallback
+  // 3. Search query (when user types song or artist name)
   try {
     const tracksFound = await searchMusicTracksClient(value);
     if (tracksFound.length > 0) {
-      const tracks: Track[] = tracksFound.slice(0, 25).map((t) => ({ ...t, origem: t.origem || "audius", isStreamable: true }));
+      const tracks: Track[] = tracksFound.slice(0, 30).map((t) => ({ ...t, origem: "youtube", isStreamable: true }));
       const searchResultData: PlaylistData = {
         sucesso: true,
         playlist_id: value,
         nome_playlist: `Músicas: ${value}`,
-        descricao: "Resultados encontrados para sua pesquisa",
+        descricao: `Resultados encontrados para "${value}"`,
         capa_playlist: tracks[0]?.capa || "",
         total_faixas: tracks.length,
         faixas: tracks,
@@ -456,7 +478,7 @@ export async function resolveYouTubeVideoIdClient(nomeMusica: string, nomeArtist
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        query: `${query} audio`,
+        query: `${nomeMusica} ${nomeArtista} official audio`,
         context: {
           client: {
             clientName: "WEB",
@@ -485,5 +507,5 @@ export async function resolveYouTubeVideoIdClient(nomeMusica: string, nomeArtist
     }
   } catch {}
 
-  return "4NRXx6U8ABQ";
+  return existingVideoId || "";
 }

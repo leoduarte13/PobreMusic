@@ -39,6 +39,7 @@ const BackgroundAudioPlayer = forwardRef<BackgroundAudioPlayerRef, Props>(functi
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const isAnchorModeRef = useRef<boolean>(false);
   const wakeLockRef = useRef<any>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
   const callbacks = useRef({
     onStatusChange,
     onTimeUpdate,
@@ -55,20 +56,38 @@ const BackgroundAudioPlayer = forwardRef<BackgroundAudioPlayerRef, Props>(functi
     };
   });
 
+  // Keep AudioContext active on mobile user interaction
+  const ensureAudioContext = () => {
+    try {
+      if (!audioContextRef.current) {
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+        if (AudioCtx) {
+          audioContextRef.current = new AudioCtx();
+        }
+      }
+      if (audioContextRef.current && audioContextRef.current.state === "suspended") {
+        void audioContextRef.current.resume();
+      }
+    } catch {}
+  };
+
   // Manage Screen WakeLock during active playback
   useEffect(() => {
     let released = false;
-    if (isPlaying && "wakeLock" in navigator && typeof (navigator as any).wakeLock?.request === "function") {
-      (navigator as any).wakeLock
-        .request("screen")
-        .then((lock: any) => {
-          if (released) {
-            lock?.release?.().catch(() => {});
-          } else {
-            wakeLockRef.current = lock;
-          }
-        })
-        .catch(() => {});
+    if (isPlaying) {
+      ensureAudioContext();
+      if ("wakeLock" in navigator && typeof (navigator as any).wakeLock?.request === "function") {
+        (navigator as any).wakeLock
+          .request("screen")
+          .then((lock: any) => {
+            if (released) {
+              lock?.release?.().catch(() => {});
+            } else {
+              wakeLockRef.current = lock;
+            }
+          })
+          .catch(() => {});
+      }
     } else {
       if (wakeLockRef.current) {
         wakeLockRef.current.release?.().catch(() => {});
@@ -88,6 +107,7 @@ const BackgroundAudioPlayer = forwardRef<BackgroundAudioPlayerRef, Props>(functi
     ref,
     () => ({
       play: () => {
+        ensureAudioContext();
         const audio = audioRef.current;
         if (!audio) return;
         void audio.play().catch(() => {});
@@ -117,6 +137,7 @@ const BackgroundAudioPlayer = forwardRef<BackgroundAudioPlayerRef, Props>(functi
         return isAnchorModeRef.current ? 0 : audio?.duration || 0;
       },
       loadAudio: (url, autoplay = true) => {
+        ensureAudioContext();
         const audio = audioRef.current;
         if (!audio) return;
         isAnchorModeRef.current = false;
@@ -129,6 +150,7 @@ const BackgroundAudioPlayer = forwardRef<BackgroundAudioPlayerRef, Props>(functi
         }
       },
       startBackgroundAnchor: () => {
+        ensureAudioContext();
         const audio = audioRef.current;
         if (!audio) return;
         isAnchorModeRef.current = true;
@@ -158,35 +180,60 @@ const BackgroundAudioPlayer = forwardRef<BackgroundAudioPlayerRef, Props>(functi
     audio.volume = Math.max(0, Math.min(1, volume / 100));
   }, [volume]);
 
-  // Direct Audio element event listeners
+  // Direct Audio element event listeners and power suspension diagnostics
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
 
+    const logState = (event: string, extra: Record<string, any> = {}) => {
+      console.log(`[PobreMusic AudioEngine] Event: ${event}`, {
+        visibilityState: typeof document !== "undefined" ? document.visibilityState : "unknown",
+        isAnchorMode: isAnchorModeRef.current,
+        currentTime: audio.currentTime,
+        duration: audio.duration,
+        paused: audio.paused,
+        ended: audio.ended,
+        audioContextState: audioContextRef.current?.state,
+        timestamp: new Date().toISOString(),
+        ...extra,
+      });
+    };
+
     const handlePlay = () => {
+      logState("play");
       if (!isAnchorModeRef.current) {
         callbacks.current.onStatusChange("playing");
       }
     };
     const handlePause = () => {
+      logState("pause", { reason: "Audio element paused" });
       if (!isAnchorModeRef.current) {
         callbacks.current.onStatusChange("paused");
       }
     };
     const handleWaiting = () => {
+      logState("waiting (buffering)");
       if (!isAnchorModeRef.current) {
         callbacks.current.onStatusChange("buffering");
       }
     };
     const handleEnded = () => {
+      logState("ended", { reason: "Audio track finished playback" });
       if (!isAnchorModeRef.current) {
         callbacks.current.onEnded();
       }
     };
-    const handleError = () => {
+    const handleError = (e: any) => {
+      logState("error", { error: audio.error });
       if (!isAnchorModeRef.current) {
         callbacks.current.onError();
       }
+    };
+    const handleSuspend = () => {
+      logState("suspend (browser paused media data download / energy saving)");
+    };
+    const handleStalled = () => {
+      logState("stalled (media data fetch stalled)");
     };
     const handleTimeUpdate = () => {
       if (!isAnchorModeRef.current) {
@@ -200,6 +247,8 @@ const BackgroundAudioPlayer = forwardRef<BackgroundAudioPlayerRef, Props>(functi
     audio.addEventListener("waiting", handleWaiting);
     audio.addEventListener("ended", handleEnded);
     audio.addEventListener("error", handleError);
+    audio.addEventListener("suspend", handleSuspend);
+    audio.addEventListener("stalled", handleStalled);
     audio.addEventListener("timeupdate", handleTimeUpdate);
 
     return () => {
@@ -209,22 +258,56 @@ const BackgroundAudioPlayer = forwardRef<BackgroundAudioPlayerRef, Props>(functi
       audio.removeEventListener("waiting", handleWaiting);
       audio.removeEventListener("ended", handleEnded);
       audio.removeEventListener("error", handleError);
+      audio.removeEventListener("suspend", handleSuspend);
+      audio.removeEventListener("stalled", handleStalled);
       audio.removeEventListener("timeupdate", handleTimeUpdate);
     };
   }, []);
 
-  // Listen for background visibility change to ensure lockscreen wake-up
+  // Listen for browser lifecycle & power suspension events (visibilitychange, freeze, resume, pagehide, pageshow)
   useEffect(() => {
     const handleVisibility = () => {
-      if (document.visibilityState === "visible" && isPlaying) {
+      const state = document.visibilityState;
+      console.warn(`[PobreMusic Lifecycle] visibilitychange -> ${state} | isPlaying=${isPlaying} | AudioContext=${audioContextRef.current?.state}`);
+      if (state === "visible" && isPlaying) {
+        ensureAudioContext();
         if (!isAnchorModeRef.current && audioRef.current && audioRef.current.paused) {
-          void audioRef.current.play().catch(() => {});
+          console.log("[PobreMusic Lifecycle] Resuming audio after returning to visible state");
+          void audioRef.current.play().catch((err) => console.warn("[PobreMusic Lifecycle] Resume play error:", err));
         }
       }
     };
+
+    const handleFreeze = () => {
+      console.warn("[PobreMusic Lifecycle] 'freeze' event fired by browser! The page is being suspended for energy conservation.");
+    };
+
+    const handleResume = () => {
+      console.log("[PobreMusic Lifecycle] 'resume' event fired by browser. Page unfrozen.");
+      ensureAudioContext();
+    };
+
+    const handlePageHide = (e: PageTransitionEvent) => {
+      console.warn(`[PobreMusic Lifecycle] 'pagehide' event fired (persisted: ${e.persisted})`);
+    };
+
+    const handlePageShow = (e: PageTransitionEvent) => {
+      console.log(`[PobreMusic Lifecycle] 'pageshow' event fired (persisted: ${e.persisted})`);
+      ensureAudioContext();
+    };
+
     document.addEventListener("visibilitychange", handleVisibility);
+    window.addEventListener("freeze", handleFreeze);
+    window.addEventListener("resume", handleResume);
+    window.addEventListener("pagehide", handlePageHide);
+    window.addEventListener("pageshow", handlePageShow);
+
     return () => {
       document.removeEventListener("visibilitychange", handleVisibility);
+      window.removeEventListener("freeze", handleFreeze);
+      window.removeEventListener("resume", handleResume);
+      window.removeEventListener("pagehide", handlePageHide);
+      window.removeEventListener("pageshow", handlePageShow);
     };
   }, [isPlaying]);
 
