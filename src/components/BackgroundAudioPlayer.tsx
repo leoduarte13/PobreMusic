@@ -99,6 +99,29 @@ const BackgroundAudioPlayer = forwardRef<BackgroundAudioPlayerRef, Props>(functi
     };
   });
 
+  // User gesture unlock for AudioContext and background pipeline on mobile devices
+  useEffect(() => {
+    const unlockAudio = () => {
+      if (audioContextRef.current && audioContextRef.current.state === "suspended") {
+        void audioContextRef.current.resume();
+      }
+      if (audioRef.current && !audioRef.current.src) {
+        audioRef.current.src = getSilentUrl();
+        audioRef.current.load();
+      }
+    };
+
+    window.addEventListener("click", unlockAudio, { once: true, passive: true });
+    window.addEventListener("touchstart", unlockAudio, { once: true, passive: true });
+    window.addEventListener("keydown", unlockAudio, { once: true, passive: true });
+
+    return () => {
+      window.removeEventListener("click", unlockAudio);
+      window.removeEventListener("touchstart", unlockAudio);
+      window.removeEventListener("keydown", unlockAudio);
+    };
+  }, []);
+
   // Web Audio continuous inaudible hardware engine to maintain OS audio focus on mobile
   const startWebAudioAnchor = () => {
     try {

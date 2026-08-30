@@ -36,6 +36,8 @@ export const YouTubeIFrameContainer = forwardRef<YouTubePlayerRef, Props>(
     const timer = useRef<any>(null);
     const lastEnded = useRef(0);
     const loaded = useRef<string>();
+    const isPlayingIntentRef = useRef<boolean>(false);
+    const isHiddenRef = useRef<boolean>(false);
 
     const callbacks = useRef({
       onStatusChange,
@@ -55,11 +57,13 @@ export const YouTubeIFrameContainer = forwardRef<YouTubePlayerRef, Props>(
 
     useImperativeHandle(ref, () => ({
       play: () => {
+        isPlayingIntentRef.current = true;
         try {
           playerRef.current?.playVideo?.();
         } catch {}
       },
       pause: () => {
+        isPlayingIntentRef.current = false;
         try {
           playerRef.current?.pauseVideo?.();
         } catch {}
@@ -91,6 +95,7 @@ export const YouTubeIFrameContainer = forwardRef<YouTubePlayerRef, Props>(
       loadVideo: (id) => {
         if (!id) return;
         loaded.current = id;
+        isPlayingIntentRef.current = true;
         try {
           playerRef.current?.loadVideoById?.({ videoId: id, startSeconds: 0 });
         } catch {}
@@ -111,6 +116,33 @@ export const YouTubeIFrameContainer = forwardRef<YouTubePlayerRef, Props>(
       callbacks.current.onStatusChange("ended");
       callbacks.current.onTrackEnded();
     };
+
+    useEffect(() => {
+      const handleVisibilityChange = () => {
+        const isHidden = document.visibilityState === "hidden";
+        isHiddenRef.current = isHidden;
+        if (isHidden && isPlayingIntentRef.current) {
+          // Prevent mobile background throttling by reinforcing play command
+          try {
+            playerRef.current?.playVideo?.();
+          } catch {}
+        } else if (!isHidden && isPlayingIntentRef.current) {
+          try {
+            playerRef.current?.playVideo?.();
+          } catch {}
+        }
+      };
+
+      document.addEventListener("visibilitychange", handleVisibilityChange);
+      window.addEventListener("pagehide", handleVisibilityChange);
+      window.addEventListener("blur", handleVisibilityChange);
+
+      return () => {
+        document.removeEventListener("visibilitychange", handleVisibilityChange);
+        window.removeEventListener("pagehide", handleVisibilityChange);
+        window.removeEventListener("blur", handleVisibilityChange);
+      };
+    }, []);
 
     useEffect(() => {
       const init = () => {
@@ -142,12 +174,23 @@ export const YouTubeIFrameContainer = forwardRef<YouTubePlayerRef, Props>(
               },
               onStateChange: (e: any) => {
                 if (e.data === 1) {
+                  // Playing
                   callbacks.current.onStatusChange("playing");
                 } else if (e.data === 2) {
-                  callbacks.current.onStatusChange("paused");
+                  // Paused: Check if this was an automatic background pause
+                  if (isPlayingIntentRef.current && (document.visibilityState === "hidden" || isHiddenRef.current)) {
+                    // Mobile browser tried to pause on app switch/lock screen - re-assert playback
+                    try {
+                      playerRef.current?.playVideo?.();
+                    } catch {}
+                  } else {
+                    callbacks.current.onStatusChange("paused");
+                  }
                 } else if (e.data === 3) {
+                  // Buffering
                   callbacks.current.onStatusChange("buffering");
                 } else if (e.data === 0) {
+                  // Ended
                   handleEnded();
                 } else if (e.data === 5) {
                   callbacks.current.onStatusChange("cued");
@@ -213,10 +256,10 @@ export const YouTubeIFrameContainer = forwardRef<YouTubePlayerRef, Props>(
     }, [volume, ready]);
 
     return (
-      /* Pure background audio playback engine: hidden off-screen */
+      /* Background audio engine container positioned in viewport with minimal dimension to prevent engine discarding */
       <div
         id="pure-audio-engine"
-        className="fixed -top-[9999px] -left-[9999px] w-[200px] h-[200px] opacity-0 pointer-events-none"
+        className="fixed bottom-0 right-0 w-[4px] h-[4px] opacity-[0.01] pointer-events-none -z-50 overflow-hidden"
         aria-hidden="true"
       >
         <div id={containerId.current} className="w-full h-full" />
