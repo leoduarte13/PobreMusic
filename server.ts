@@ -6,6 +6,8 @@ import session from "express-session";
 import cookieParser from "cookie-parser";
 // @ts-ignore
 import * as spotifyUrlInfoPkg from "spotify-url-info";
+import { handlePublicPlaylist } from "./api/public-playlist";
+import { handleAudius } from "./api/audius";
 
 dotenv.config();
 
@@ -982,9 +984,14 @@ app.get("/api/config-status", (req, res) => {
   });
 });
 
+// API: Audius search and stream proxy
+app.all("/api/audius", (req, res) => {
+  return handleAudius(req, res);
+});
+
 // API: Get Spotify Playlist Tracks
-// Supported Routes: /api/spotify-playlist, /api/spotify-playlist/:id, /api/playlist-tracks, /api/playlist, /api/playlist/:id, /api/playlist-tracks/:id
-app.all(["/api/spotify-playlist", "/api/spotify-playlist/:id", "/api/playlist-tracks", "/api/playlist-tracks/:id", "/api/playlist", "/api/playlist/:id"], async (req, res) => {
+// Supported Routes: /api/spotify-playlist, /api/spotify-playlist/:id, /api/public-playlist, /api/public-playlist/:id, /api/playlist-tracks, /api/playlist-tracks/:id, /api/playlist, /api/playlist/:id
+app.all(["/api/spotify-playlist", "/api/spotify-playlist/:id", "/api/public-playlist", "/api/public-playlist/:id", "/api/playlist-tracks", "/api/playlist-tracks/:id", "/api/playlist", "/api/playlist/:id"], async (req, res) => {
   try {
     let rawInput = (req.params.id || req.query.url || req.query.id || req.body?.url || req.body?.id || req.body?.playlistId || "") as string;
     rawInput = await resolvePossibleShortlink(rawInput);

@@ -12,7 +12,47 @@ useEffect(()=>{fetch("/api/config-status",{cache:"no-store"}).then(r=>r.json()).
 useEffect(()=>{if(!googleUser?.uid){setSavedPlaylists([]);return}return subscribeToUserCloudPlaylists(googleUser.uid,setSavedPlaylists,e=>console.warn("Cloud playlists:",e))},[googleUser?.uid]);
 const handleGoogleLogin=useCallback(async()=>{setGoogleLoggingIn(true);try{setGoogleUser(await signInWithGoogle(true))}catch(e:any){console.error("Google login:",e);alert(e?.message||"Não foi possível entrar com Google.")}finally{setGoogleLoggingIn(false)}},[]);const handleGoogleLogout=useCallback(async()=>{try{await logoutGoogle()}finally{setGoogleUser(null);setSavedPlaylists([])}},[]);
 const handleSpotifyLoginSuccess=(u:SpotifyUser)=>{setSpotifyUser(u);setSpotifyAuthOpen(false);setNeedsAuthNotice(false);fetchUserPlaylists()};const logoutSpotify=async()=>{try{localStorage.removeItem("spotifyTokenManual");localStorage.removeItem("spotifyTokenManuaL")}catch{}try{await fetch("/api/auth/logout",{method:"POST",credentials:"include"})}catch{}setSpotifyUser(null);setUserPlaylists([])};
-const loadPlaylist=useCallback(async(input:string)=>{const value=input.trim();if(!value)return;setIsLoadingPlaylist(true);setPlaylistError(null);setNeedsAuthNotice(false);playlistLogger.startLoad(value,getCandidateBackendUrls());try{const{data,needsAuth}=await fetchPlaylistSafe(value,getToken()||null);if(needsAuth)setNeedsAuthNotice(true);if(!data?.sucesso||!Array.isArray(data.faixas)||!data.faixas.length)throw Error(data?.descricao||data?.error||"Não foi possível carregar as faixas. Conecte o Spotify para playlists privadas.");setPlaylistData(data);setTracks(data.faixas);setCurrentTrackIndex(null);setPlaybackStatus("unstarted");setCurrentTime(0);setDuration(0);nativeModeRef.current=false;ytRef.current?.pause();audioRef.current?.pause();playlistLogger.finishLoad(value,{sucesso:true,totalFaixas:data.total_faixas,nomePlaylist:data.nome_playlist,modo:data.modo})}catch(e:any){const m=e?.message||"Não foi possível carregar a playlist.";setPlaylistData(null);setTracks([]);setCurrentTrackIndex(null);setPlaylistError(m);playlistLogger.finishLoad(value,{sucesso:false,error:m})}finally{setIsLoadingPlaylist(false)}},[]);useEffect(()=>{loadPlaylist("top_hits")},[loadPlaylist]);
+  const loadPlaylist = useCallback(async (input: string) => {
+    const value = input.trim();
+    if (!value) return;
+    setIsLoadingPlaylist(true);
+    setPlaylistError(null);
+    setNeedsAuthNotice(false);
+    playlistLogger.startLoad(value, getCandidateBackendUrls());
+    try {
+      const { data, needsAuth } = await fetchPlaylistSafe(value, getToken() || null);
+      if (needsAuth) setNeedsAuthNotice(true);
+      if (!data?.sucesso || !Array.isArray(data.faixas) || !data.faixas.length) {
+        throw new Error(data?.descricao || data?.error || "Não foi possível carregar as faixas desta playlist. Verifique se o link está correto ou se a playlist é privada.");
+      }
+      setPlaylistData(data);
+      setTracks(data.faixas);
+      setCurrentTrackIndex(null);
+      setPlaybackStatus("unstarted");
+      setCurrentTime(0);
+      setDuration(0);
+      nativeModeRef.current = false;
+      ytRef.current?.pause();
+      audioRef.current?.pause();
+      playlistLogger.finishLoad(value, {
+        sucesso: true,
+        totalFaixas: data.total_faixas,
+        nomePlaylist: data.nome_playlist,
+        modo: data.modo,
+      });
+    } catch (e: any) {
+      const errorMsg = e?.message === "Failed to fetch"
+        ? "Falha de conexão com o servidor. Tente novamente em alguns instantes."
+        : (e?.message || "Não foi possível carregar a playlist informada.");
+      setPlaylistData(null);
+      setTracks([]);
+      setCurrentTrackIndex(null);
+      setPlaylistError(errorMsg);
+      playlistLogger.finishLoad(value, { sucesso: false, error: errorMsg });
+    } finally {
+      setIsLoadingPlaylist(false);
+    }
+  }, []);useEffect(()=>{loadPlaylist("top_hits")},[loadPlaylist]);
 const playTrack=useCallback(async(index:number)=>{const list=tracksRef.current;if(index<0||index>=list.length)return;indexRef.current=index;setCurrentTrackIndex(index);setCurrentTime(0);setDuration(0);const t=list[index];try{if(t.audioUrl){nativeModeRef.current=true;ytRef.current?.pause();audioRef.current?.loadAudio(t.audioUrl,true);return}nativeModeRef.current=false;let id=t.videoId;if(!id)id=await resolveYouTubeVideoIdClient(t.nome_musica,t.nome_artista);setTracks(p=>p.map((x,i)=>i===index?{...x,videoId:id,isLoadingVideo:false}:x));ytRef.current?.loadVideo(id);ytRef.current?.play()}catch{setTracks(p=>p.map((x,i)=>i===index?{...x,isLoadingVideo:false,hasError:true}:x));setTimeout(()=>nextTrackRef.current(),300)}},[]);
 const nextTrack=useCallback(()=>{const l=tracksRef.current,c=indexRef.current;if(!l.length||c===null)return;if(repeatRef.current==="one"){playTrack(c);return}if(shuffleRef.current){let n=Math.floor(Math.random()*l.length);if(l.length>1&&n===c)n=(c+1)%l.length;playTrack(n);return}if(c+1<l.length)playTrack(c+1);else if(repeatRef.current==="all")playTrack(0);else setCurrentTrackIndex(null)},[playTrack]);useEffect(()=>{nextTrackRef.current=nextTrack},[nextTrack]);
 const previousTrack=useCallback(()=>{const l=tracksRef.current,c=indexRef.current;if(!l.length||c===null)return;if(currentTime>3){nativeModeRef.current?audioRef.current?.seekTo(0):ytRef.current?.seekTo(0);return}playTrack(c>0?c-1:l.length-1)},[currentTime,playTrack]);

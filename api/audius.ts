@@ -13,7 +13,9 @@ function headers() {
 }
 
 async function audius(path: string) {
-  const r = await fetch(`${API}${path}`, { headers: headers(), cache: 'no-store' });
+  const sep = path.includes('?') ? '&' : '?';
+  const url = `${API}${path}${sep}app_name=POBREMUSIC`;
+  const r = await fetch(url, { headers: headers(), cache: 'no-store' });
   const text = await r.text();
   let data: any = {};
   try { data = JSON.parse(text); } catch {}
@@ -44,9 +46,11 @@ async function search(q: string) {
   const queries = [...new Set([q.trim(), q.split(/\s+-\s+/)[0]?.trim()].filter(Boolean))];
   const all: any[] = [];
   for (const query of queries) {
-    const data = await audius(`/tracks/search?query=${encodeURIComponent(query)}&limit=25&sort_method=relevant`);
-    if (Array.isArray(data?.data)) all.push(...data.data);
-    if (all.length >= 25) break;
+    try {
+      const data = await audius(`/tracks/search?query=${encodeURIComponent(query)}&limit=25&sort_method=relevant`);
+      if (Array.isArray(data?.data)) all.push(...data.data);
+      if (all.length >= 25) break;
+    } catch {}
   }
   const seen = new Set<string>();
   return all.filter((t: any) => {
@@ -58,7 +62,8 @@ async function search(q: string) {
 }
 
 async function stream(id: string) {
-  const r = await fetch(`${API}/tracks/${encodeURIComponent(id)}/stream`, { headers: headers(), redirect: 'manual' });
+  const url = `${API}/tracks/${encodeURIComponent(id)}/stream?app_name=POBREMUSIC`;
+  const r = await fetch(url, { headers: headers(), redirect: 'manual' });
   if (r.status < 300 || r.status >= 400) {
     const text = await r.text();
     let data: any = {};
@@ -70,7 +75,7 @@ async function stream(id: string) {
   return location;
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export async function handleAudius(req: any, res: any) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Accept, Content-Type');
@@ -78,11 +83,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET') return res.status(405).json({ sucesso: false, error: 'Método não permitido.' });
 
   try {
-    const key = String(process.env.AUDIUS_API_KEY || '').trim();
-    const bearer = String(process.env.AUDIUS_API_BEARER_TOKEN || process.env.AUDIUS_BEARER_TOKEN || '').trim();
-    if (!key && !bearer) return res.status(503).json({ sucesso: false, error: 'Audius ainda não configurado. Adicione AUDIUS_API_KEY ou AUDIUS_API_BEARER_TOKEN no Vercel.' });
-
-    const streamId = typeof req.query.stream === 'string' ? req.query.stream.trim() : '';
+    const streamId = typeof req.query?.stream === 'string' ? req.query.stream.trim() : '';
     if (streamId) {
       const location = await stream(streamId);
       res.setHeader('Cache-Control', 'private, max-age=60');
@@ -90,7 +91,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(302).end();
     }
 
-    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    const q = typeof req.query?.q === 'string' ? req.query.q.trim() : '';
     if (!q) return res.status(400).json({ sucesso: false, error: 'Informe q.' });
     const tracks = await search(q);
     return res.status(200).json({ sucesso: true, origem: 'audius', tracks, total: tracks.length });
@@ -99,3 +100,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(502).json({ sucesso: false, error: error?.message || String(error) });
   }
 }
+
+export default handleAudius;
