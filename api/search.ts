@@ -1,20 +1,21 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-const INSTANCES = [
+const FALLBACK_INSTANCES = [
   'https://pipedapi.kavin.rocks',
-  'https://pipedapi.tokhmi.xyz',
-  'https://pipedapi.moomoo.me',
-  'https://pipedapi.syncpundit.io',
-  'https://api-piped.mha.fi',
-  'https://piped-api.garudalinux.org',
-  'https://pipedapi.qdi.fi',
-  'https://piped-api.hostux.net',
-  'https://pdapi.vern.cc',
-  'https://pipedapi.pfcd.me',
+  'https://pipedapi.leptons.xyz',
+  'https://pipedapi.nosebs.ru',
+  'https://pipedapi-libre.kavin.rocks',
+  'https://piped-api.privacy.com.de',
+  'https://pipedapi.adminforge.de',
   'https://api.piped.yt',
-  'https://pipedapi.osphost.fi',
-  'https://pipedapi.simpleprivacy.fr',
-  'https://pipedapi.drgns.space'
+  'https://pipedapi.drgns.space',
+  'https://pipedapi.owo.si',
+  'https://pipedapi.ducks.party',
+  'https://piped-api.codespace.cz',
+  'https://pipedapi.reallyaweso.me',
+  'https://api.piped.private.coffee',
+  'https://pipedapi.darkness.services',
+  'https://pipedapi.orangenet.cc'
 ];
 
 function normalize(text: string) {
@@ -38,18 +39,33 @@ function score(title: string, query: string, artist: string, uploader = '') {
   return s;
 }
 
-async function pipedSearch(query: string, instance: string) {
-  for (const filter of ['music_songs', 'videos']) {
+async function getInstances() {
+  try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
+    const timeout = setTimeout(() => controller.abort(), 4000);
+    const r = await fetch('https://raw.githubusercontent.com/TeamPiped/documentation/main/content/docs/public-instances/index.md', { signal: controller.signal, headers: { Accept: 'text/plain' } });
+    clearTimeout(timeout);
+    if (!r.ok) return FALLBACK_INSTANCES;
+    const text = await r.text();
+    const urls = [...text.matchAll(/\|\s*(https?:\/\/[^\s|]+)\s*\|/g)].map(m => m[1].replace(/\/$/, ''));
+    const dynamic = [...new Set(urls)].filter(u => /^https:\/\//i.test(u));
+    return [...new Set([...dynamic, ...FALLBACK_INSTANCES])];
+  } catch {
+    return FALLBACK_INSTANCES;
+  }
+}
+
+async function pipedSearch(query: string, instance: string) {
+  for (const filter of ['music_songs', 'music_videos', 'all']) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4500);
     try {
-      const r = await fetch(`${instance}/search?q=${encodeURIComponent(query)}&filter=${filter}`, {
-        headers: { Accept: 'application/json' }, signal: controller.signal
-      });
+      const url = `${instance}/search?q=${encodeURIComponent(query)}&filter=${filter}`;
+      const r = await fetch(url, { headers: { Accept: 'application/json', 'User-Agent': 'PobreMusic/1.0' }, signal: controller.signal });
       if (!r.ok) continue;
       const data: any = await r.json();
       const items = Array.isArray(data.items) ? data.items : [];
-      const streams = items.filter((x: any) => x?.type === 'stream');
+      const streams = items.filter((x: any) => x?.type === 'stream' || typeof x?.url === 'string');
       if (streams.length) return streams;
     } catch {
       // Try the next filter/instance.
@@ -62,8 +78,10 @@ async function pipedSearch(query: string, instance: string) {
 
 function extractVideoId(value: unknown) {
   const s = String(value || '');
-  const match = s.match(/[?&]v=([A-Za-z0-9_-]{11})/) || s.match(/\/watch\/([A-Za-z0-9_-]{11})/);
-  return match?.[1] || '';
+  return s.match(/[?&]v=([A-Za-z0-9_-]{11})/)?.[1]
+    || s.match(/\/watch\/([A-Za-z0-9_-]{11})/)?.[1]
+    || s.match(/^([A-Za-z0-9_-]{11})$/)?.[1]
+    || '';
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -79,8 +97,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const query = `${nomeMusica} ${nomeArtista}`.trim();
   if (!nomeMusica) return res.status(400).json({ sucesso:false, error:'Nome da música não informado.' });
 
+  const instances = await getInstances();
   let lastError = '';
-  for (const instance of INSTANCES) {
+  for (const instance of instances) {
     try {
       const candidates = await pipedSearch(query, instance);
       if (!candidates.length) continue;
@@ -88,9 +107,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .map((x:any) => ({
           videoId: extractVideoId(x.url || x.id),
           titulo: String(x.title || ''),
-          canal: String(x.uploaderName || x.uploaderUrl || ''),
+          canal: String(x.uploaderName || x.uploader || x.uploaderUrl || ''),
           duracao: Number(x.duration || 0),
-          capa: x.thumbnail || ''
+          capa: x.thumbnail || x.thumbnailUrl || ''
         }))
         .filter((x:any) => x.videoId)
         .sort((a:any,b:any) => score(b.titulo, nomeMusica, nomeArtista, b.canal) - score(a.titulo, nomeMusica, nomeArtista, a.canal));
@@ -101,5 +120,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       lastError = `${instance}: ${String(error?.message || error)}`;
     }
   }
-  return res.status(502).json({ sucesso:false, error:'Não foi possível encontrar uma fonte de áudio para esta música.', details:lastError });
+  return res.status(502).json({ sucesso:false, error:'Não foi possível encontrar uma fonte de áudio para esta música.', details:lastError, instancesTestadas:instances.length });
 }
