@@ -8,7 +8,8 @@ export interface Track {
   spotify_url?: string;
   videoId?: string;
   videoTitle?: string;
-  source?: 'youtube';
+  audioUrl?: string;
+  source?: 'piped';
   hasError?: boolean;
 }
 
