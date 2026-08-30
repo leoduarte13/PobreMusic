@@ -100,34 +100,18 @@ const handleSpotifyLoginSuccess=(u:SpotifyUser)=>{setSpotifyUser(u);setSpotifyAu
     const t = list[index];
 
     try {
-      // 1. Direct stream already on track
-      if (t.audioUrl) {
+      // 1. Direct stream only if explicit verified audioUrl exists on the track
+      if (t.audioUrl && (t.origem === "audius" || t.origem === "jamendo" || t.origem === "custom")) {
         nativeModeRef.current = true;
         ytRef.current?.pause();
         audioRef.current?.loadAudio(t.audioUrl, true);
         return;
       }
 
-      // 2. Fast direct audio check (Audius / Jamendo)
-      const directTrack = await resolveDirectAudioTrack(t.nome_musica, t.nome_artista);
-      if (directTrack?.audioUrl) {
-        nativeModeRef.current = true;
-        ytRef.current?.pause();
-        setTracks((p) =>
-          p.map((x, i) =>
-            i === index
-              ? { ...x, audioUrl: directTrack.audioUrl, origem: directTrack.origem || "audius" }
-              : x
-          )
-        );
-        audioRef.current?.loadAudio(directTrack.audioUrl, true);
-        return;
-      }
-
-      // 3. YouTube stream fallback with background audio anchor
+      // 2. YouTube stream - resolve EXACT videoId for the song
       nativeModeRef.current = false;
       let id = t.videoId;
-      if (!id) {
+      if (!id || id === "4NRXx6U8ABQ") {
         id = await resolveYouTubeVideoIdClient(t.nome_musica, t.nome_artista);
       }
       setTracks((p) => p.map((x, i) => (i === index ? { ...x, videoId: id, isLoadingVideo: false } : x)));

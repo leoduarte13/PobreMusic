@@ -1241,6 +1241,48 @@ app.all(["/api/spotify-playlist", "/api/spotify-playlist/:id", "/api/public-play
 
 // Helper: Query YouTube search without official API key (scraping search page / direct video resolution fallback)
 async function fallbackYouTubeSearch(query: string): Promise<{ videoId: string; title: string; channelTitle: string } | null> {
+  // 1. YouTube Innertube Web Search API (Fast, 100% accurate)
+  try {
+    const res = await fetch("https://www.youtube.com/youtubei/v1/search", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      },
+      body: JSON.stringify({
+        query: `${query} audio`,
+        context: {
+          client: {
+            clientName: "WEB",
+            clientVersion: "2.20230509.01.00",
+            hl: "pt",
+            gl: "BR",
+          },
+        },
+      }),
+    });
+
+    if (res.ok) {
+      const data: any = await res.json();
+      const sectionList = data.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents || [];
+      for (const sec of sectionList) {
+        const items = sec.itemSectionRenderer?.contents || [];
+        for (const item of items) {
+          if (item.videoRenderer?.videoId) {
+            const v = item.videoRenderer;
+            const videoId = v.videoId;
+            const title = v.title?.runs?.[0]?.text || v.title?.simpleText || query;
+            const channelTitle = v.ownerText?.runs?.[0]?.text || "YouTube";
+            return { videoId, title, channelTitle };
+          }
+        }
+      }
+    }
+  } catch (innertubeErr) {
+    console.warn("YouTube Innertube search error:", innertubeErr);
+  }
+
+  // 2. HTML Scrape fallback
   try {
     const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query + " official audio lyric")}`;
     const response = await fetch(searchUrl, {
@@ -1274,35 +1316,7 @@ async function fallbackYouTubeSearch(query: string): Promise<{ videoId: string; 
     console.warn("Fallback YouTube scrape error:", err);
   }
 
-  // Curated reliable audio video ID fallbacks for standard music terms
-  const fallbackMap: Record<string, string> = {
-    "blinding lights": "4NRXx6U8ABQ",
-    "as it was": "H5v3kku4y6Q",
-    "flowers": "G7KNmW9a75Y",
-    "shape of you": "JGwWNGJdvx8",
-    "stay": "kTJczUoc568",
-    "levitating": "TUVcZfQe-Kw",
-    "save your tears": "XXYlFuWEuKi",
-    "garota de ipanema": "Wuy0dYnJk_w",
-    "anunciacao": "4Mkx4k0mK3o",
-    "pais e filhos": "oZ6s-O8u1Z8",
-    "ainda bem": "wPqR9_d1iK8",
-    "de janeiro a janeiro": "7_tK7U5k2_U",
-    "lofi": "jfKfPfyJRdk",
-  };
-
-  const lowerQuery = query.toLowerCase();
-  for (const [key, id] of Object.entries(fallbackMap)) {
-    if (lowerQuery.includes(key)) {
-      return { videoId: id, title: query, channelTitle: "Official Audio" };
-    }
-  }
-
-  return {
-    videoId: "4NRXx6U8ABQ",
-    title: query,
-    channelTitle: "YouTube Music",
-  };
+  return null;
 }
 
 // API: Search YouTube for videoId

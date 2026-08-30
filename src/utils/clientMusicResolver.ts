@@ -179,7 +179,11 @@ export async function resolveAudiusTrack(nomeMusica: string, nomeArtista: string
   }
   if (!all.length) return null;
   const best = all.sort((a, b) => matchScore(b, nomeMusica, nomeArtista) - matchScore(a, nomeMusica, nomeArtista))[0];
-  return best?.audioUrl ? (best as Track) : null;
+  if (!best || !best.audioUrl) return null;
+  const score = matchScore(best, nomeMusica, nomeArtista);
+  // Strict matching only: avoid picking random indie music for commercial tracks
+  if (score < 150) return null;
+  return best as Track;
 }
 
 export async function searchMusicTracksClient(query: string): Promise<TrackSearchResult[]> {
@@ -410,12 +414,19 @@ export async function fetchPlaylistSafe(urlOrId: string, spotifyToken?: string |
   };
 }
 
+const clientVideoIdCache = new Map<string, string>();
+
 export async function resolveYouTubeVideoIdClient(nomeMusica: string, nomeArtista: string, existingVideoId?: string): Promise<string> {
   if (existingVideoId && /^[\w-]{11}$/.test(existingVideoId)) {
     return existingVideoId;
   }
 
   const query = `${nomeMusica} ${nomeArtista}`.trim();
+  const cacheKey = query.toLowerCase();
+  if (clientVideoIdCache.has(cacheKey)) {
+    return clientVideoIdCache.get(cacheKey)!;
+  }
+
   const candidateUrls = getCandidateBackendUrls();
 
   for (const base of candidateUrls) {
@@ -427,7 +438,8 @@ export async function resolveYouTubeVideoIdClient(nomeMusica: string, nomeArtist
       clearTimeout(timeoutId);
       if (r.ok) {
         const data = await r.json().catch(() => ({}));
-        if (data?.videoId && typeof data.videoId === "string") {
+        if (data?.videoId && typeof data.videoId === "string" && data.videoId.length === 11) {
+          clientVideoIdCache.set(cacheKey, data.videoId);
           return data.videoId;
         }
       }
@@ -436,6 +448,42 @@ export async function resolveYouTubeVideoIdClient(nomeMusica: string, nomeArtist
     }
   }
 
-  // Fallback curated video ID
+  // Direct client-side Innertube Search fallback
+  try {
+    const directRes = await fetch("https://www.youtube.com/youtubei/v1/search", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query: `${query} audio`,
+        context: {
+          client: {
+            clientName: "WEB",
+            clientVersion: "2.20230509.01.00",
+            hl: "pt",
+            gl: "BR",
+          },
+        },
+      }),
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (directRes.ok) {
+      const d: any = await directRes.json();
+      const sectionList = d.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents || [];
+      for (const sec of sectionList) {
+        const items = sec.itemSectionRenderer?.contents || [];
+        for (const item of items) {
+          if (item.videoRenderer?.videoId) {
+            const vid = item.videoRenderer.videoId;
+            clientVideoIdCache.set(cacheKey, vid);
+            return vid;
+          }
+        }
+      }
+    }
+  } catch {}
+
   return "4NRXx6U8ABQ";
 }
