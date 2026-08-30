@@ -87,13 +87,49 @@ export function cachePlaylistMetadata(playlist: PlaylistData): void {
 export function setLastPlayedPlaylist(playlist: PlaylistData): void {
   if (!playlist || !playlist.faixas || playlist.faixas.length === 0) return;
   try {
-    const payload = {
-      ...playlist,
+    const payload: PlaylistData & { cachedAt: number } = {
+      sucesso: true,
+      playlist_id: playlist.playlist_id || 'last_played',
+      nome_playlist: playlist.nome_playlist || 'Última Playlist',
+      descricao: playlist.descricao || '',
+      capa_playlist: playlist.capa_playlist || playlist.faixas[0]?.capa || '',
+      total_faixas: playlist.faixas.length,
+      faixas: playlist.faixas.map((t) => ({
+        nome_musica: t.nome_musica,
+        nome_artista: t.nome_artista,
+        duracao_ms: t.duracao_ms,
+        album: t.album,
+        capa: t.capa,
+        videoId: t.videoId,
+        audioUrl: t.audioUrl,
+        origem: t.origem,
+        isStreamable: t.isStreamable ?? true,
+      })),
+      modo: 'offline_cached',
+      aviso: 'Modo Offline: Faixas carregadas da memória do seu dispositivo.',
       cachedAt: Date.now(),
     };
     localStorage.setItem(STORAGE_KEYS.LAST_PLAYED_PLAYLIST, JSON.stringify(payload));
   } catch (err) {
     console.warn('[OfflineStorage] Could not store last played playlist:', err);
+  }
+}
+
+/**
+ * Updates the tracks of the current last played playlist in localStorage
+ */
+export function updateLastPlayedPlaylistTracks(tracks: Track[]): void {
+  try {
+    const current = getLastPlayedPlaylist();
+    if (current) {
+      setLastPlayedPlaylist({
+        ...current,
+        faixas: tracks,
+        total_faixas: tracks.length,
+      });
+    }
+  } catch (err) {
+    console.warn('[OfflineStorage] Could not update last played playlist tracks:', err);
   }
 }
 

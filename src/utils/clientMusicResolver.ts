@@ -1,4 +1,5 @@
 import { PlaylistData, Track, TrackSearchResult } from "../types";
+import { cachePlaylistMetadata, getCachedPlaylist, getLastPlayedPlaylist } from "./offlineStorage";
 
 const PRESET_PLAYLISTS_CLIENT: Record<string, any> = {
   top_hits: {
@@ -113,6 +114,60 @@ function matchScore(c: any, title: string, artist: string) {
   return s;
 }
 
+export async function resolveJamendoTrack(nomeMusica: string, nomeArtista: string): Promise<Track | null> {
+  const candidateUrls = getCandidateBackendUrls();
+  for (const base of candidateUrls) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2000);
+    try {
+      const url = `${base}/api/jamendo-search?nome_musica=${encodeURIComponent(nomeMusica)}&nome_artista=${encodeURIComponent(nomeArtista)}`;
+      const r = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store", signal: controller.signal });
+      clearTimeout(timeoutId);
+      if (r.ok) {
+        const d = await r.json().catch(() => ({}));
+        if (d?.sucesso && d?.audioUrl) {
+          return {
+            nome_musica: d.nome_musica || nomeMusica,
+            nome_artista: d.nome_artista || nomeArtista,
+            duracao_ms: d.duracao_ms || 180000,
+            album: d.album || "Jamendo",
+            capa: d.capa || "",
+            audioUrl: d.audioUrl,
+            origem: "jamendo",
+            sourceUrl: d.sourceUrl,
+            isStreamable: true,
+          };
+        }
+      }
+    } catch {
+      clearTimeout(timeoutId);
+    }
+  }
+  return null;
+}
+
+export async function resolveDirectAudioTrack(nomeMusica: string, nomeArtista: string): Promise<Track | null> {
+  // 1. Try Audius first (popular catalogue)
+  try {
+    const audiusTrack = await Promise.race([
+      resolveAudiusTrack(nomeMusica, nomeArtista),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 1800)),
+    ]);
+    if (audiusTrack?.audioUrl) return audiusTrack;
+  } catch {}
+
+  // 2. Try Jamendo
+  try {
+    const jamendoTrack = await Promise.race([
+      resolveJamendoTrack(nomeMusica, nomeArtista),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+    ]);
+    if (jamendoTrack?.audioUrl) return jamendoTrack;
+  } catch {}
+
+  return null;
+}
+
 export async function resolveAudiusTrack(nomeMusica: string, nomeArtista: string): Promise<Track | null> {
   const queries = [`${nomeMusica} ${nomeArtista}`, nomeMusica].filter((q, i, a) => q.trim() && a.indexOf(q) === i);
   const all: any[] = [];
@@ -199,18 +254,32 @@ export async function fetchPlaylistSafe(urlOrId: string, spotifyToken?: string |
   // 1. Direct Presets Match
   if (PRESET_PLAYLISTS_CLIENT[value]) {
     const p = PRESET_PLAYLISTS_CLIENT[value];
-    return {
-      data: {
-        sucesso: true,
-        playlist_id: p.id,
-        nome_playlist: p.name,
-        descricao: p.description,
-        capa_playlist: p.cover,
-        total_faixas: p.tracks.length,
-        faixas: p.tracks,
-        modo: "preset",
-      },
+    const presetData: PlaylistData = {
+      sucesso: true,
+      playlist_id: p.id,
+      nome_playlist: p.name,
+      descricao: p.description,
+      capa_playlist: p.cover,
+      total_faixas: p.tracks.length,
+      faixas: p.tracks,
+      modo: "preset",
     };
+    cachePlaylistMetadata(presetData);
+    return { data: presetData };
+  }
+
+  // 2. If client is completely offline, immediately attempt local cache
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    const cached = getCachedPlaylist(value) || getLastPlayedPlaylist();
+    if (cached && Array.isArray(cached.faixas) && cached.faixas.length > 0) {
+      return {
+        data: {
+          ...cached,
+          modo: "offline_cached",
+          aviso: "Modo Offline: Lista de faixas carregada da memória local.",
+        },
+      };
+    }
   }
 
   const isSpotify = /spotify\.com|spotify:|spoti\.fi|spotify\.link/i.test(value);
@@ -266,15 +335,18 @@ export async function fetchPlaylistSafe(urlOrId: string, spotifyToken?: string |
               isStreamable: true,
             }));
 
-            return {
-              data: {
-                ...d,
-                faixas: normalizedFaixas,
-                total_faixas: normalizedFaixas.length,
-                modo: d.modo || "spotify_embed_extractor",
-                aviso: "Playlist carregada com sucesso. Reprodução contínua pronta!",
-              },
+            const resultData: PlaylistData = {
+              ...d,
+              faixas: normalizedFaixas,
+              total_faixas: normalizedFaixas.length,
+              modo: d.modo || "spotify_embed_extractor",
+              aviso: "Playlist carregada com sucesso. Reprodução contínua pronta!",
             };
+
+            // Cache in local storage for offline access
+            cachePlaylistMetadata(resultData);
+
+            return { data: resultData };
           }
         } catch (e: any) {
           clearTimeout(timeoutId);
@@ -288,30 +360,42 @@ export async function fetchPlaylistSafe(urlOrId: string, spotifyToken?: string |
     }
   }
 
-  // 2. Search query fallback
+  // 3. Search query fallback
   try {
     const tracksFound = await searchMusicTracksClient(value);
     if (tracksFound.length > 0) {
       const tracks: Track[] = tracksFound.slice(0, 25).map((t) => ({ ...t, origem: t.origem || "audius", isStreamable: true }));
-      return {
-        data: {
-          sucesso: true,
-          playlist_id: value,
-          nome_playlist: `Músicas: ${value}`,
-          descricao: "Resultados encontrados para sua pesquisa",
-          capa_playlist: tracks[0]?.capa || "",
-          total_faixas: tracks.length,
-          faixas: tracks,
-          modo: "search_results",
-          aviso: "Resultados de pesquisa carregados com sucesso.",
-        },
+      const searchResultData: PlaylistData = {
+        sucesso: true,
+        playlist_id: value,
+        nome_playlist: `Músicas: ${value}`,
+        descricao: "Resultados encontrados para sua pesquisa",
+        capa_playlist: tracks[0]?.capa || "",
+        total_faixas: tracks.length,
+        faixas: tracks,
+        modo: "search_results",
+        aviso: "Resultados de pesquisa carregados com sucesso.",
       };
+      cachePlaylistMetadata(searchResultData);
+      return { data: searchResultData };
     }
   } catch (e: any) {
     console.warn("Search fallback error:", e);
   }
 
-  // 3. Fallback error with actionable message
+  // 4. Offline / Cached recovery fallback before returning error
+  const cachedFallback = getCachedPlaylist(value) || getLastPlayedPlaylist();
+  if (cachedFallback && Array.isArray(cachedFallback.faixas) && cachedFallback.faixas.length > 0) {
+    return {
+      data: {
+        ...cachedFallback,
+        modo: "offline_cached",
+        aviso: "Modo Offline: Faixas recuperadas da persistência local (cache).",
+      },
+    };
+  }
+
+  // 5. Fallback error with actionable message
   return {
     data: {
       sucesso: false,

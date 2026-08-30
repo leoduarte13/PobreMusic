@@ -6,8 +6,9 @@ import session from "express-session";
 import cookieParser from "cookie-parser";
 // @ts-ignore
 import * as spotifyUrlInfoPkg from "spotify-url-info";
-import { handlePublicPlaylist } from "./api/public-playlist";
+import handlePublicPlaylist from "./api/public-playlist";
 import { handleAudius } from "./api/audius";
+import handleJamendo from "./api/jamendo-search";
 
 dotenv.config();
 
@@ -987,6 +988,11 @@ app.get("/api/config-status", (req, res) => {
 // API: Audius search and stream proxy
 app.all("/api/audius", (req, res) => {
   return handleAudius(req, res);
+});
+
+// API: Jamendo search and stream proxy
+app.all("/api/jamendo-search", (req, res) => {
+  return handleJamendo(req as any, res as any);
 });
 
 // API: Get Spotify Playlist Tracks

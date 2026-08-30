@@ -36,32 +36,6 @@ export const AudioPlayerBar: React.FC<AudioPlayerBarProps> = ({
   const handleSliderMouseDown = () => { setIsSeeking(true); setSeekValue(currentTime); };
   const handleSliderMouseUp = () => { setIsSeeking(false); onSeek(seekValue); };
 
-  // Media Session integrates the player with Android/iOS lock-screen and headset controls.
-  // The actual audio stream remains the existing YouTube IFrame player; this does not create
-  // a second player or reload the track when the screen is locked/minimized.
-  useEffect(() => {
-    if (!("mediaSession" in navigator) || !currentTrack) return;
-    const mediaSession = navigator.mediaSession;
-    try {
-      mediaSession.metadata = new MediaMetadata({
-        title: currentTrack.nome_musica || "Música",
-        artist: currentTrack.nome_artista || "PobreMusic",
-        album: "PobreMusic",
-        artwork: currentTrack.capa ? [{ src: currentTrack.capa, sizes: "512x512", type: "image/jpeg" }] : undefined,
-      });
-      const actions: [MediaSessionAction, MediaSessionActionHandler][] = [
-        ["play", onTogglePlayPause], ["pause", onTogglePlayPause],
-        ["previoustrack", onPrevTrack], ["nexttrack", onNextTrack],
-        ["seekbackward", () => onSeek(Math.max(0, currentTime - 10))],
-        ["seekforward", () => onSeek(Math.min(duration || currentTime + 10, currentTime + 10))],
-      ];
-      actions.forEach(([action, handler]) => { try { mediaSession.setActionHandler(action, handler); } catch {} });
-      try { mediaSession.setPositionState({ duration: Math.max(duration || 0.1, 0.1), playbackRate: 1, position: Math.min(currentTime, Math.max(duration || 0.1, 0.1)) }); } catch {}
-      mediaSession.playbackState = isPlaying ? "playing" : "paused";
-      return () => actions.forEach(([action]) => { try { mediaSession.setActionHandler(action, null); } catch {} });
-    } catch {}
-  }, [currentTrack?.nome_musica, currentTrack?.nome_artista, currentTrack?.capa, currentTime, duration, isPlaying, onTogglePlayPause, onPrevTrack, onNextTrack, onSeek]);
-
   if (!currentTrack) return <footer className="fixed bottom-0 left-0 right-0 z-40 bg-zinc-950/95 border-t border-zinc-800/80 backdrop-blur-lg px-4 py-2.5 pb-safe text-center text-xs text-zinc-500 shadow-2xl">Selecione uma faixa para reproduzir</footer>;
 
   const progressPercent = duration > 0 ? ((isSeeking ? seekValue : currentTime) / duration) * 100 : 0;
