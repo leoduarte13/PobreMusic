@@ -2,11 +2,19 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 const INSTANCES = [
   'https://pipedapi.kavin.rocks',
-  'https://piped-api.lunar.icu',
-  'https://api.piped.privacydev.net',
-  'https://pipedapi.drgns.space',
-  'https://pipedapi.vyper.me',
-  'https://api.looleh.xyz'
+  'https://pipedapi.tokhmi.xyz',
+  'https://pipedapi.moomoo.me',
+  'https://pipedapi.syncpundit.io',
+  'https://api-piped.mha.fi',
+  'https://piped-api.garudalinux.org',
+  'https://pipedapi.qdi.fi',
+  'https://piped-api.hostux.net',
+  'https://pdapi.vern.cc',
+  'https://pipedapi.pfcd.me',
+  'https://api.piped.yt',
+  'https://pipedapi.osphost.fi',
+  'https://pipedapi.simpleprivacy.fr',
+  'https://pipedapi.drgns.space'
 ];
 
 function normalize(text: string) {
@@ -33,7 +41,7 @@ function score(title: string, query: string, artist: string, uploader = '') {
 async function pipedSearch(query: string, instance: string) {
   for (const filter of ['music_songs', 'videos']) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 7000);
+    const timeout = setTimeout(() => controller.abort(), 5000);
     try {
       const r = await fetch(`${instance}/search?q=${encodeURIComponent(query)}&filter=${filter}`, {
         headers: { Accept: 'application/json' }, signal: controller.signal
@@ -41,13 +49,21 @@ async function pipedSearch(query: string, instance: string) {
       if (!r.ok) continue;
       const data: any = await r.json();
       const items = Array.isArray(data.items) ? data.items : [];
-      const streams = items.filter((x: any) => x?.type === 'stream' && x?.url);
+      const streams = items.filter((x: any) => x?.type === 'stream');
       if (streams.length) return streams;
+    } catch {
+      // Try the next filter/instance.
     } finally {
       clearTimeout(timeout);
     }
   }
   return [];
+}
+
+function extractVideoId(value: unknown) {
+  const s = String(value || '');
+  const match = s.match(/[?&]v=([A-Za-z0-9_-]{11})/) || s.match(/\/watch\/([A-Za-z0-9_-]{11})/);
+  return match?.[1] || '';
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -70,7 +86,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (!candidates.length) continue;
       const ranked = candidates
         .map((x:any) => ({
-          videoId: String(x.url).match(/[?&]v=([^&]+)/)?.[1] || '',
+          videoId: extractVideoId(x.url || x.id),
           titulo: String(x.title || ''),
           canal: String(x.uploaderName || x.uploaderUrl || ''),
           duracao: Number(x.duration || 0),
