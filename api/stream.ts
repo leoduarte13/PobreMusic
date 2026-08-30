@@ -2,11 +2,19 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 const INSTANCES = [
   'https://pipedapi.kavin.rocks',
-  'https://piped-api.lunar.icu',
-  'https://api.piped.privacydev.net',
-  'https://pipedapi.drgns.space',
-  'https://pipedapi.vyper.me',
-  'https://api.looleh.xyz'
+  'https://pipedapi.tokhmi.xyz',
+  'https://pipedapi.moomoo.me',
+  'https://pipedapi.syncpundit.io',
+  'https://api-piped.mha.fi',
+  'https://piped-api.garudalinux.org',
+  'https://pipedapi.qdi.fi',
+  'https://piped-api.hostux.net',
+  'https://pdapi.vern.cc',
+  'https://pipedapi.pfcd.me',
+  'https://api.piped.yt',
+  'https://pipedapi.osphost.fi',
+  'https://pipedapi.simpleprivacy.fr',
+  'https://pipedapi.drgns.space'
 ];
 
 function pickAudio(streams: any[]) {
@@ -31,7 +39,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   let lastError = '';
   for (const instance of INSTANCES) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 7000);
+    const timeout = setTimeout(() => controller.abort(), 5000);
     try {
       const r = await fetch(`${instance}/streams/${encodeURIComponent(videoId)}`, {
         headers: { Accept: 'application/json' },
