@@ -1,22 +1,10 @@
 {
-  "version": 2,
-  "rewrites": [
-    { "source": "/auth/spotify/callback", "destination": "/api/index.ts?route=callback" },
-    { "source": "/auth/spotify/callback/", "destination": "/api/index.ts?route=callback" },
-    { "source": "/api/public-playlist", "destination": "/api/public-playlist.ts" },
-    { "source": "/api/public-playlist/", "destination": "/api/public-playlist.ts" },
-    { "source": "/api/spotify-playlist", "destination": "/api/spotify-playlist.ts" },
-    { "source": "/api/spotify-playlist/", "destination": "/api/spotify-playlist.ts" },
-    { "source": "/api/search", "destination": "/api/search.ts" },
-    { "source": "/api/search/", "destination": "/api/search.ts" },
-    { "source": "/api/(.*)", "destination": "/api/index.ts" }
+  "version":2,
+  "rewrites":[
+    {"source":"/api/public-playlist","destination":"/api/public-playlist.ts"},
+    {"source":"/api/public-playlist/","destination":"/api/public-playlist.ts"},
+    {"source":"/api/search","destination":"/api/search.ts"},
+    {"source":"/api/search/","destination":"/api/search.ts"}
   ],
-  "headers": [
-    {
-      "source": "/api/(.*)",
-      "headers": [
-        { "key": "Cache-Control", "value": "no-store" }
-      ]
-    }
-  ]
+  "headers":[{"source":"/api/(.*)","headers":[{"key":"Cache-Control","value":"no-store"}]}]
 }
