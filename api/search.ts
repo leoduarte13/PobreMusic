@@ -2,10 +2,11 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 const INSTANCES = [
   'https://pipedapi.kavin.rocks',
-  'https://pipedapi-libre.kavin.rocks',
-  'https://pipedapi.adminforge.de',
-  'https://pipedapi.reallyaweso.me',
-  'https://api.piped.private.coffee'
+  'https://piped-api.lunar.icu',
+  'https://api.piped.privacydev.net',
+  'https://pipedapi.drgns.space',
+  'https://pipedapi.vyper.me',
+  'https://api.looleh.xyz'
 ];
 
 function normalize(text: string) {
@@ -31,12 +32,20 @@ function score(title: string, query: string, artist: string, uploader = '') {
 
 async function pipedSearch(query: string, instance: string) {
   for (const filter of ['music_songs', 'videos']) {
-    const r = await fetch(`${instance}/search?q=${encodeURIComponent(query)}&filter=${filter}`, { headers: { Accept: 'application/json' } });
-    if (!r.ok) continue;
-    const data: any = await r.json();
-    const items = Array.isArray(data.items) ? data.items : [];
-    const streams = items.filter((x: any) => x?.type === 'stream' && x?.url);
-    if (streams.length) return streams;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 7000);
+    try {
+      const r = await fetch(`${instance}/search?q=${encodeURIComponent(query)}&filter=${filter}`, {
+        headers: { Accept: 'application/json' }, signal: controller.signal
+      });
+      if (!r.ok) continue;
+      const data: any = await r.json();
+      const items = Array.isArray(data.items) ? data.items : [];
+      const streams = items.filter((x: any) => x?.type === 'stream' && x?.url);
+      if (streams.length) return streams;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
   return [];
 }
@@ -73,7 +82,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (!best) continue;
       return res.status(200).json({ sucesso:true, videoId:best.videoId, titulo:best.titulo, canal:best.canal, duracao:best.duracao, capa:best.capa, origem:'piped', instance, score:score(best.titulo, nomeMusica, nomeArtista, best.canal) });
     } catch (error:any) {
-      lastError = String(error?.message || error);
+      lastError = `${instance}: ${String(error?.message || error)}`;
     }
   }
   return res.status(502).json({ sucesso:false, error:'Não foi possível encontrar uma fonte de áudio para esta música.', details:lastError });
