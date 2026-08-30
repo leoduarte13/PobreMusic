@@ -22,24 +22,67 @@ interface Props {
   onError: () => void;
 }
 
-// 1-second silent stereo WAV encoded in base64 to keep the mobile audio pipeline active
-const SILENT_AUDIO_URI = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
+// Generate a valid 2-second silent WAV as base64 URL with proper WAV headers
+const createSilentAudioUrl = (): string => {
+  // 1-second 44.1kHz 16-bit stereo PCM silence
+  const sampleRate = 44100;
+  const numChannels = 2;
+  const bytesPerSample = 2;
+  const numSamples = sampleRate * 2;
+  const blockAlign = numChannels * bytesPerSample;
+  const byteRate = sampleRate * blockAlign;
+  const dataSize = numSamples * blockAlign;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+
+  // RIFF identifier
+  const writeString = (offset: number, string: string) => {
+    for (let i = 0; i < string.length; i++) {
+      view.setUint8(offset + i, string.charCodeAt(i));
+    }
+  };
+
+  writeString(0, "RIFF");
+  view.setUint32(4, 36 + dataSize, true);
+  writeString(8, "WAVE");
+  writeString(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, 16, true); // 16-bit
+  writeString(36, "data");
+  view.setUint32(40, dataSize, true);
+
+  const blob = new Blob([buffer], { type: "audio/wav" });
+  return URL.createObjectURL(blob);
+};
+
+let cachedSilentUrl: string | null = null;
+const getSilentUrl = () => {
+  if (!cachedSilentUrl && typeof window !== "undefined") {
+    try {
+      cachedSilentUrl = createSilentAudioUrl();
+    } catch {
+      cachedSilentUrl = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
+    }
+  }
+  return cachedSilentUrl || "";
+};
 
 const BackgroundAudioPlayer = forwardRef<BackgroundAudioPlayerRef, Props>(function BackgroundAudioPlayer(
-  {
-    volume,
-    isPlaying,
-    onStatusChange,
-    onTimeUpdate,
-    onEnded,
-    onError,
-  },
+  { volume, isPlaying, onStatusChange, onTimeUpdate, onEnded, onError },
   ref
 ) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const isAnchorModeRef = useRef<boolean>(false);
   const wakeLockRef = useRef<any>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const oscillatorRef = useRef<OscillatorNode | null>(null);
+  const gainNodeRef = useRef<GainNode | null>(null);
+
   const callbacks = useRef({
     onStatusChange,
     onTimeUpdate,
@@ -56,8 +99,8 @@ const BackgroundAudioPlayer = forwardRef<BackgroundAudioPlayerRef, Props>(functi
     };
   });
 
-  // Keep AudioContext active on mobile user interaction
-  const ensureAudioContext = () => {
+  // Web Audio continuous inaudible hardware engine to maintain OS audio focus on mobile
+  const startWebAudioAnchor = () => {
     try {
       if (!audioContextRef.current) {
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
@@ -65,41 +108,93 @@ const BackgroundAudioPlayer = forwardRef<BackgroundAudioPlayerRef, Props>(functi
           audioContextRef.current = new AudioCtx();
         }
       }
-      if (audioContextRef.current && audioContextRef.current.state === "suspended") {
-        void audioContextRef.current.resume();
+
+      if (audioContextRef.current) {
+        if (audioContextRef.current.state === "suspended") {
+          void audioContextRef.current.resume();
+        }
+
+        if (!oscillatorRef.current && !gainNodeRef.current) {
+          const osc = audioContextRef.current.createOscillator();
+          const gain = audioContextRef.current.createGain();
+
+          // Sub-audible frequency (10Hz) at near-zero gain (0.0001) keeps hardware pipeline active
+          osc.type = "sine";
+          osc.frequency.setValueAtTime(10, audioContextRef.current.currentTime);
+          gain.gain.setValueAtTime(0.0001, audioContextRef.current.currentTime);
+
+          osc.connect(gain);
+          gain.connect(audioContextRef.current.destination);
+
+          osc.start();
+          oscillatorRef.current = osc;
+          gainNodeRef.current = gain;
+        }
+      }
+    } catch (e) {
+      console.warn("[BackgroundAudio] WebAudio anchor error:", e);
+    }
+  };
+
+  const stopWebAudioAnchor = () => {
+    try {
+      if (oscillatorRef.current) {
+        oscillatorRef.current.stop();
+        oscillatorRef.current.disconnect();
+        oscillatorRef.current = null;
+      }
+      if (gainNodeRef.current) {
+        gainNodeRef.current.disconnect();
+        gainNodeRef.current = null;
       }
     } catch {}
   };
 
-  // Manage Screen WakeLock during active playback
-  useEffect(() => {
-    let released = false;
-    if (isPlaying) {
-      ensureAudioContext();
+  // Screen WakeLock Management
+  const requestWakeLock = async () => {
+    try {
       if ("wakeLock" in navigator && typeof (navigator as any).wakeLock?.request === "function") {
-        (navigator as any).wakeLock
-          .request("screen")
-          .then((lock: any) => {
-            if (released) {
-              lock?.release?.().catch(() => {});
-            } else {
-              wakeLockRef.current = lock;
-            }
-          })
-          .catch(() => {});
+        if (!wakeLockRef.current) {
+          const lock = await (navigator as any).wakeLock.request("screen");
+          wakeLockRef.current = lock;
+          lock.addEventListener?.("release", () => {
+            wakeLockRef.current = null;
+          });
+        }
       }
-    } else {
-      if (wakeLockRef.current) {
+    } catch {}
+  };
+
+  const releaseWakeLock = () => {
+    if (wakeLockRef.current) {
+      try {
         wakeLockRef.current.release?.().catch(() => {});
-        wakeLockRef.current = null;
-      }
+      } catch {}
+      wakeLockRef.current = null;
     }
-    return () => {
-      released = true;
-      if (wakeLockRef.current) {
-        wakeLockRef.current.release?.().catch(() => {});
-        wakeLockRef.current = null;
+  };
+
+  useEffect(() => {
+    if (isPlaying) {
+      startWebAudioAnchor();
+      void requestWakeLock();
+    } else {
+      releaseWakeLock();
+    }
+
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible" && isPlaying) {
+        void requestWakeLock();
+        if (audioContextRef.current?.state === "suspended") {
+          void audioContextRef.current.resume();
+        }
       }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+      releaseWakeLock();
     };
   }, [isPlaying]);
 
@@ -107,7 +202,7 @@ const BackgroundAudioPlayer = forwardRef<BackgroundAudioPlayerRef, Props>(functi
     ref,
     () => ({
       play: () => {
-        ensureAudioContext();
+        startWebAudioAnchor();
         const audio = audioRef.current;
         if (!audio) return;
         void audio.play().catch(() => {});
@@ -137,7 +232,7 @@ const BackgroundAudioPlayer = forwardRef<BackgroundAudioPlayerRef, Props>(functi
         return isAnchorModeRef.current ? 0 : audio?.duration || 0;
       },
       loadAudio: (url, autoplay = true) => {
-        ensureAudioContext();
+        startWebAudioAnchor();
         const audio = audioRef.current;
         if (!audio) return;
         isAnchorModeRef.current = false;
@@ -150,17 +245,19 @@ const BackgroundAudioPlayer = forwardRef<BackgroundAudioPlayerRef, Props>(functi
         }
       },
       startBackgroundAnchor: () => {
-        ensureAudioContext();
+        startWebAudioAnchor();
         const audio = audioRef.current;
         if (!audio) return;
         isAnchorModeRef.current = true;
-        if (audio.src !== SILENT_AUDIO_URI) {
-          audio.src = SILENT_AUDIO_URI;
+        const silentUrl = getSilentUrl();
+        if (audio.src !== silentUrl) {
+          audio.src = silentUrl;
         }
         audio.loop = true;
         void audio.play().catch(() => {});
       },
       stopBackgroundAnchor: () => {
+        stopWebAudioAnchor();
         const audio = audioRef.current;
         if (!audio) return;
         if (isAnchorModeRef.current) {
@@ -173,67 +270,42 @@ const BackgroundAudioPlayer = forwardRef<BackgroundAudioPlayerRef, Props>(functi
     []
   );
 
-  // Volume synchronization
+  // Sync volume to HTML5 audio element
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
     audio.volume = Math.max(0, Math.min(1, volume / 100));
   }, [volume]);
 
-  // Direct Audio element event listeners and power suspension diagnostics
+  // Direct Audio Element Listeners
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
 
-    const logState = (event: string, extra: Record<string, any> = {}) => {
-      console.log(`[PobreMusic AudioEngine] Event: ${event}`, {
-        visibilityState: typeof document !== "undefined" ? document.visibilityState : "unknown",
-        isAnchorMode: isAnchorModeRef.current,
-        currentTime: audio.currentTime,
-        duration: audio.duration,
-        paused: audio.paused,
-        ended: audio.ended,
-        audioContextState: audioContextRef.current?.state,
-        timestamp: new Date().toISOString(),
-        ...extra,
-      });
-    };
-
     const handlePlay = () => {
-      logState("play");
       if (!isAnchorModeRef.current) {
         callbacks.current.onStatusChange("playing");
       }
     };
     const handlePause = () => {
-      logState("pause", { reason: "Audio element paused" });
       if (!isAnchorModeRef.current) {
         callbacks.current.onStatusChange("paused");
       }
     };
     const handleWaiting = () => {
-      logState("waiting (buffering)");
       if (!isAnchorModeRef.current) {
         callbacks.current.onStatusChange("buffering");
       }
     };
     const handleEnded = () => {
-      logState("ended", { reason: "Audio track finished playback" });
       if (!isAnchorModeRef.current) {
         callbacks.current.onEnded();
       }
     };
-    const handleError = (e: any) => {
-      logState("error", { error: audio.error });
+    const handleError = () => {
       if (!isAnchorModeRef.current) {
         callbacks.current.onError();
       }
-    };
-    const handleSuspend = () => {
-      logState("suspend (browser paused media data download / energy saving)");
-    };
-    const handleStalled = () => {
-      logState("stalled (media data fetch stalled)");
     };
     const handleTimeUpdate = () => {
       if (!isAnchorModeRef.current) {
@@ -247,8 +319,6 @@ const BackgroundAudioPlayer = forwardRef<BackgroundAudioPlayerRef, Props>(functi
     audio.addEventListener("waiting", handleWaiting);
     audio.addEventListener("ended", handleEnded);
     audio.addEventListener("error", handleError);
-    audio.addEventListener("suspend", handleSuspend);
-    audio.addEventListener("stalled", handleStalled);
     audio.addEventListener("timeupdate", handleTimeUpdate);
 
     return () => {
@@ -258,75 +328,17 @@ const BackgroundAudioPlayer = forwardRef<BackgroundAudioPlayerRef, Props>(functi
       audio.removeEventListener("waiting", handleWaiting);
       audio.removeEventListener("ended", handleEnded);
       audio.removeEventListener("error", handleError);
-      audio.removeEventListener("suspend", handleSuspend);
-      audio.removeEventListener("stalled", handleStalled);
       audio.removeEventListener("timeupdate", handleTimeUpdate);
     };
   }, []);
 
-  // Listen for browser lifecycle & power suspension events (visibilitychange, freeze, resume, pagehide, pageshow)
-  useEffect(() => {
-    const handleVisibility = () => {
-      const state = document.visibilityState;
-      console.warn(`[PobreMusic Lifecycle] visibilitychange -> ${state} | isPlaying=${isPlaying} | AudioContext=${audioContextRef.current?.state}`);
-      if (state === "visible" && isPlaying) {
-        ensureAudioContext();
-        if (!isAnchorModeRef.current && audioRef.current && audioRef.current.paused) {
-          console.log("[PobreMusic Lifecycle] Resuming audio after returning to visible state");
-          void audioRef.current.play().catch((err) => console.warn("[PobreMusic Lifecycle] Resume play error:", err));
-        }
-      }
-    };
-
-    const handleFreeze = () => {
-      console.warn("[PobreMusic Lifecycle] 'freeze' event fired by browser! The page is being suspended for energy conservation.");
-    };
-
-    const handleResume = () => {
-      console.log("[PobreMusic Lifecycle] 'resume' event fired by browser. Page unfrozen.");
-      ensureAudioContext();
-    };
-
-    const handlePageHide = (e: PageTransitionEvent) => {
-      console.warn(`[PobreMusic Lifecycle] 'pagehide' event fired (persisted: ${e.persisted})`);
-    };
-
-    const handlePageShow = (e: PageTransitionEvent) => {
-      console.log(`[PobreMusic Lifecycle] 'pageshow' event fired (persisted: ${e.persisted})`);
-      ensureAudioContext();
-    };
-
-    document.addEventListener("visibilitychange", handleVisibility);
-    window.addEventListener("freeze", handleFreeze);
-    window.addEventListener("resume", handleResume);
-    window.addEventListener("pagehide", handlePageHide);
-    window.addEventListener("pageshow", handlePageShow);
-
-    return () => {
-      document.removeEventListener("visibilitychange", handleVisibility);
-      window.removeEventListener("freeze", handleFreeze);
-      window.removeEventListener("resume", handleResume);
-      window.removeEventListener("pagehide", handlePageHide);
-      window.removeEventListener("pageshow", handlePageShow);
-    };
-  }, [isPlaying]);
-
   return (
     <audio
       ref={audioRef}
-      preload="auto"
       playsInline
-      style={{
-        position: "fixed",
-        width: 1,
-        height: 1,
-        opacity: 0.01,
-        pointerEvents: "none",
-        bottom: 0,
-        left: 0,
-        zIndex: -1,
-      }}
-      aria-label="PobreMusic Background Audio Engine"
+      preload="auto"
+      className="hidden"
+      aria-hidden="true"
     />
   );
 });
