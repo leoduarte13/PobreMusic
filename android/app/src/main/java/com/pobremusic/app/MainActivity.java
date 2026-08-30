@@ -2,11 +2,9 @@ package com.pobremusic.app;
 
 import android.Manifest;
 import android.content.ComponentName;
-import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.view.Gravity;
-import android.view.View;
 import android.widget.*;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
@@ -17,7 +15,7 @@ import com.google.common.util.concurrent.ListenableFuture;
 import org.json.*;
 import java.io.*;
 import java.net.*;
-import java.util.*;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class MainActivity extends AppCompatActivity {
@@ -39,11 +37,32 @@ public class MainActivity extends AppCompatActivity {
 
     private void connect(){ controllerFuture=new MediaController.Builder(this,new SessionToken(this,new ComponentName(this,PlaybackService.class))).buildAsync(); controllerFuture.addListener(()->{try{controller=controllerFuture.get();}catch(Exception ignored){}},ContextCompat.getMainExecutor(this)); }
 
-    private void importPlaylist(){ final String link=url.getText().toString().trim(); if(link.isEmpty())return; status.setText("Importando..."); list.removeAllViews(); Executors.newSingleThreadExecutor().execute(()->{try{String raw=get(API+"/api/public-playlist?url="+URLEncoder.encode(link,"UTF-8")); JSONObject data=new JSONObject(raw); if(!data.optBoolean("sucesso"))throw new Exception(data.optString("error","Falha")); JSONArray tracks=data.getJSONArray("faixas"); runOnUiThread(()->status.setText(tracks.length()+" músicas importadas")); for(int i=0;i<tracks.length();i++){JSONObject t=tracks.getJSONObject(i); addTrack(t,i+1,tracks.length());}}catch(Exception e){runOnUiThread(()->status.setText("Erro: "+e.getMessage()));}}).shutdown(); }
+    private void importPlaylist(){
+        final String link=url.getText().toString().trim(); if(link.isEmpty())return;
+        status.setText("Importando..."); list.removeAllViews();
+        ExecutorService executor=Executors.newSingleThreadExecutor();
+        executor.execute(()->{try{
+            String raw=get(API+"/api/public-playlist?url="+URLEncoder.encode(link,"UTF-8"));
+            JSONObject data=new JSONObject(raw); if(!data.optBoolean("sucesso"))throw new Exception(data.optString("error","Falha"));
+            JSONArray tracks=data.getJSONArray("faixas"); runOnUiThread(()->status.setText(tracks.length()+" músicas importadas"));
+            for(int i=0;i<tracks.length();i++){JSONObject t=tracks.getJSONObject(i); addTrack(t,i+1,tracks.length());}
+        }catch(Exception e){runOnUiThread(()->status.setText("Erro: "+e.getMessage()));}});
+        executor.shutdown();
+    }
 
     private void addTrack(JSONObject t,int n,int total){runOnUiThread(()->{TextView row=new TextView(this); String name=t.optString("nome_musica"); String artist=t.optString("nome_artista"); row.setText(n+". "+name+"\n"+artist); row.setTextColor(0xffffffff); row.setTextSize(16); row.setPadding(12,18,12,18); row.setOnClickListener(v->resolveAndPlay(name,artist,t.optString("capa"))); list.addView(row,new LinearLayout.LayoutParams(-1,-2));});}
 
-    private void resolveAndPlay(String name,String artist,String art){status.setText("Encontrando: "+name); Executors.newSingleThreadExecutor().execute(()->{try{String q="/api/search?nome_musica="+URLEncoder.encode(name,"UTF-8")+"&nome_artista="+URLEncoder.encode(artist,"UTF-8"); JSONObject r=new JSONObject(get(API+q)); if(!r.optBoolean("sucesso"))throw new Exception(r.optString("error","Fonte não encontrada")); String id=r.getString("videoId"); String audio=API+"/api/audio?videoId="+URLEncoder.encode(id,"UTF-8"); runOnUiThread(()->{if(controller!=null){controller.setMediaItem(MediaItem.fromUri(audio)); controller.prepare(); controller.play(); status.setText(name+" — "+artist);}});}catch(Exception e){runOnUiThread(()->status.setText("Não foi possível tocar: "+e.getMessage()));}}).shutdown();}
+    private void resolveAndPlay(String name,String artist,String art){
+        status.setText("Encontrando: "+name);
+        ExecutorService executor=Executors.newSingleThreadExecutor();
+        executor.execute(()->{try{
+            String q="/api/search?nome_musica="+URLEncoder.encode(name,"UTF-8")+"&nome_artista="+URLEncoder.encode(artist,"UTF-8");
+            JSONObject r=new JSONObject(get(API+q)); if(!r.optBoolean("sucesso"))throw new Exception(r.optString("error","Fonte não encontrada"));
+            String id=r.getString("videoId"); String audio=API+"/api/audio?videoId="+URLEncoder.encode(id,"UTF-8");
+            runOnUiThread(()->{if(controller!=null){controller.setMediaItem(MediaItem.fromUri(audio)); controller.prepare(); controller.play(); status.setText(name+" — "+artist);}else status.setText("Player ainda conectando...");});
+        }catch(Exception e){runOnUiThread(()->status.setText("Não foi possível tocar: "+e.getMessage()));}});
+        executor.shutdown();
+    }
 
     private String get(String s)throws Exception{HttpURLConnection c=(HttpURLConnection)new URL(s).openConnection(); c.setConnectTimeout(10000); c.setReadTimeout(15000); c.setRequestProperty("Accept","application/json"); try(InputStream in=c.getInputStream();BufferedReader br=new BufferedReader(new InputStreamReader(in))){StringBuilder x=new StringBuilder();String l;while((l=br.readLine())!=null)x.append(l);return x.toString();}finally{c.disconnect();}}
     @Override protected void onDestroy(){if(controllerFuture!=null)MediaController.releaseFuture(controllerFuture);super.onDestroy();}
