@@ -1,11 +1,15 @@
 import React,{useCallback,useEffect,useRef,useState}from"react";
-import{Navbar}from"./components/Navbar";import{PlaylistInput}from"./components/PlaylistInput";import{TrackList}from"./components/TrackList";import{AudioPlayerBar}from"./components/AudioPlayerBar";import{YouTubeIFrameContainer,YouTubePlayerRef}from"./components/YouTubeIFrameContainer";import BackgroundAudioPlayer,{BackgroundAudioPlayerRef}from"./components/BackgroundAudioPlayer";import{SpotifyAuthModal}from"./components/SpotifyAuthModal";import{ConfigGuideModal}from"./components/ConfigGuideModal";import{SavePlaylistModal}from"./components/SavePlaylistModal";import{CreatePlaylistModal}from"./components/CreatePlaylistModal";import{Track,PlaylistData,ConfigStatus,PlaybackStatus,SpotifyUser,UserPlaylistSummary,GoogleUserProfile,SavedPlaylist}from"./types";
+import{Navbar}from"./components/Navbar";import{PlaylistInput}from"./components/PlaylistInput";import{TrackList}from"./components/TrackList";import{AudioPlayerBar}from"./components/AudioPlayerBar";import{YouTubeIFrameContainer,YouTubePlayerRef}from"./components/YouTubeIFrameContainer";import BackgroundAudioPlayer,{BackgroundAudioPlayerRef}from"./components/BackgroundAudioPlayer";import{SpotifyAuthModal}from"./components/SpotifyAuthModal";import{ConfigGuideModal}from"./components/ConfigGuideModal";import{SavePlaylistModal}from"./components/SavePlaylistModal";import{CreatePlaylistModal}from"./components/CreatePlaylistModal";import{MobileInstallBanner}from"./components/MobileInstallBanner";import{MobileDownloadModal}from"./components/MobileDownloadModal";import{Track,PlaylistData,ConfigStatus,PlaybackStatus,SpotifyUser,UserPlaylistSummary,GoogleUserProfile,SavedPlaylist}from"./types";
 import{fetchPlaylistSafe,getCandidateBackendUrls,resolveYouTubeVideoIdClient,resolveDirectAudioTrack}from"./utils/clientMusicResolver";
 import{cachePlaylistMetadata,getLastPlayedPlaylist,getCachedPlaylist,updateLastPlayedPlaylistTracks}from"./utils/offlineStorage";
 import{playlistLogger}from"./utils/logger";import{signInWithGoogle,logoutGoogle,subscribeToAuth,checkRedirectAuthResult,saveUserPlaylistToCloud,deleteUserPlaylistFromCloud,subscribeToUserCloudPlaylists}from"./lib/firebase";import{AlertCircle,Disc3,Lock,LogIn}from"lucide-react";
 function normalizePlaylist(p:any):UserPlaylistSummary{return{id:String(p?.id||""),name:String(p?.name||"Playlist sem nome"),description:p?.description||"",isPrivate:p?.isPrivate??p?.public===false??false,isCollaborative:Boolean(p?.isCollaborative??p?.collaborative),trackCount:Number(p?.trackCount??p?.total_tracks??p?.items?.total??p?.tracks?.total??0),cover:p?.cover||p?.image_url||p?.images?.[0]?.url||"",ownerName:p?.ownerName||p?.owner?.display_name||"Você"}}
 export default function App(){
 const[configStatus,setConfigStatus]=useState<ConfigStatus|null>(null),[configOpen,setConfigOpen]=useState(false),[spotifyAuthOpen,setSpotifyAuthOpen]=useState(false),[spotifyUser,setSpotifyUser]=useState<SpotifyUser|null>(null),[googleUser,setGoogleUser]=useState<GoogleUserProfile|null>(null),[googleLoggingIn,setGoogleLoggingIn]=useState(false),[userPlaylists,setUserPlaylists]=useState<UserPlaylistSummary[]>([]),[isLoadingUserPlaylists,setIsLoadingUserPlaylists]=useState(false),[savedPlaylists,setSavedPlaylists]=useState<SavedPlaylist[]>([]),[playlistData,setPlaylistData]=useState<PlaylistData|null>(null),[tracks,setTracks]=useState<Track[]>([]),[isLoadingPlaylist,setIsLoadingPlaylist]=useState(false),[playlistError,setPlaylistError]=useState<string|null>(null),[needsAuthNotice,setNeedsAuthNotice]=useState(false),[currentTrackIndex,setCurrentTrackIndex]=useState<number|null>(null),[playbackStatus,setPlaybackStatus]=useState<PlaybackStatus>("unstarted"),[currentTime,setCurrentTime]=useState(0),[duration,setDuration]=useState(0),[volume,setVolume]=useState(80),[isMuted,setIsMuted]=useState(false),[previousVolume,setPreviousVolume]=useState(80),[shuffle,setShuffle]=useState(false),[repeatMode,setRepeatMode]=useState<"off"|"all"|"one">("all"),[saveModalOpen,setSaveModalOpen]=useState(false),[createModalOpen,setCreateModalOpen]=useState(false);
+const[mobileDownloadOpen,setMobileDownloadOpen]=useState(false);
+const[showMobileInstallBanner,setShowMobileInstallBanner]=useState(false);
+const[canInstallPWA,setCanInstallPWA]=useState(false);
+const[deferredPrompt,setDeferredPrompt]=useState<any>(null);
 const ytRef=useRef<YouTubePlayerRef>(null),audioRef=useRef<BackgroundAudioPlayerRef>(null),tracksRef=useRef<Track[]>([]),indexRef=useRef<number|null>(null),shuffleRef=useRef(false),repeatRef=useRef<"off"|"all"|"one">("all"),nativeModeRef=useRef(false),nextTrackRef=useRef<()=>void>(()=>{});
 useEffect(()=>{tracksRef.current=tracks},[tracks]);useEffect(()=>{indexRef.current=currentTrackIndex},[currentTrackIndex]);useEffect(()=>{shuffleRef.current=shuffle},[shuffle]);useEffect(()=>{repeatRef.current=repeatMode},[repeatMode]);
 const getToken=()=>{try{return localStorage.getItem("spotifyTokenManual")||localStorage.getItem("spotifyTokenManuaL")||""}catch{return""}};
@@ -15,6 +19,73 @@ useEffect(()=>{fetch("/api/config-status",{cache:"no-store"}).then(r=>r.json()).
 useEffect(()=>{if(!googleUser?.uid){setSavedPlaylists([]);return}return subscribeToUserCloudPlaylists(googleUser.uid,setSavedPlaylists,e=>console.warn("Cloud playlists:",e))},[googleUser?.uid]);
 const handleGoogleLogin=useCallback(async()=>{setGoogleLoggingIn(true);try{setGoogleUser(await signInWithGoogle(true))}catch(e:any){console.error("Google login:",e);alert(e?.message||"Não foi possível entrar com Google.")}finally{setGoogleLoggingIn(false)}},[]);const handleGoogleLogout=useCallback(async()=>{try{await logoutGoogle()}finally{setGoogleUser(null);setSavedPlaylists([])}},[]);
 const handleSpotifyLoginSuccess=(u:SpotifyUser)=>{setSpotifyUser(u);setSpotifyAuthOpen(false);setNeedsAuthNotice(false);fetchUserPlaylists()};const logoutSpotify=async()=>{try{localStorage.removeItem("spotifyTokenManual");localStorage.removeItem("spotifyTokenManuaL")}catch{}try{await fetch("/api/auth/logout",{method:"POST",credentials:"include"})}catch{}setSpotifyUser(null);setUserPlaylists([])};
+
+// Mobile detection & PWA install setup
+useEffect(() => {
+  if (typeof window === "undefined") return;
+
+  const isStandalone =
+    window.matchMedia("(display-mode: standalone)").matches ||
+    (window.navigator as any).standalone === true;
+
+  const isMobileDevice =
+    /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+      navigator.userAgent
+    ) || window.innerWidth < 768;
+
+  if (isMobileDevice && !isStandalone) {
+    const dismissed = sessionStorage.getItem("pobremusic_install_banner_dismissed");
+    if (!dismissed) {
+      setShowMobileInstallBanner(true);
+    }
+  }
+
+  const handleBeforeInstall = (e: any) => {
+    e.preventDefault();
+    setDeferredPrompt(e);
+    setCanInstallPWA(true);
+    setShowMobileInstallBanner(true);
+  };
+
+  const handleAppInstalled = () => {
+    setCanInstallPWA(false);
+    setDeferredPrompt(null);
+    setShowMobileInstallBanner(false);
+  };
+
+  window.addEventListener("beforeinstallprompt", handleBeforeInstall);
+  window.addEventListener("appinstalled", handleAppInstalled);
+
+  return () => {
+    window.removeEventListener("beforeinstallprompt", handleBeforeInstall);
+    window.removeEventListener("appinstalled", handleAppInstalled);
+  };
+}, []);
+
+const handleTriggerPWAInstall = async () => {
+  if (deferredPrompt) {
+    try {
+      deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      if (outcome === "accepted") {
+        setCanInstallPWA(false);
+        setDeferredPrompt(null);
+        setShowMobileInstallBanner(false);
+      }
+    } catch (err) {
+      console.warn("PWA install error:", err);
+    }
+  } else {
+    setMobileDownloadOpen(true);
+  }
+};
+
+const handleDismissBanner = () => {
+  setShowMobileInstallBanner(false);
+  try {
+    sessionStorage.setItem("pobremusic_install_banner_dismissed", "true");
+  } catch {}
+};
   const loadPlaylist = useCallback(async (input: string) => {
     const value = input.trim();
     if (!value) return;
@@ -378,6 +449,16 @@ const handleSpotifyLoginSuccess=(u:SpotifyUser)=>{setSpotifyUser(u);setSpotifyAu
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col pb-24">
+      {/* Mobile Install & Download Banner on access */}
+      {showMobileInstallBanner && (
+        <MobileInstallBanner
+          onOpenDownloadModal={() => setMobileDownloadOpen(true)}
+          onTriggerPWAInstall={handleTriggerPWAInstall}
+          canInstallPWA={canInstallPWA}
+          onDismiss={handleDismissBanner}
+        />
+      )}
+
       <Navbar
         configStatus={configStatus}
         spotifyUser={spotifyUser}
@@ -389,6 +470,7 @@ const handleSpotifyLoginSuccess=(u:SpotifyUser)=>{setSpotifyUser(u);setSpotifyAu
         onLoginGoogle={handleGoogleLogin}
         onLogoutGoogle={handleGoogleLogout}
         onOpenConfigModal={() => setConfigOpen(true)}
+        onOpenMobileDownload={() => setMobileDownloadOpen(true)}
       />
       <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:py-6 space-y-4">
         <PlaylistInput
@@ -449,6 +531,7 @@ const handleSpotifyLoginSuccess=(u:SpotifyUser)=>{setSpotifyUser(u);setSpotifyAu
             onRemoveMultipleTracks={removeMultipleTracks}
             onOpenSaveModal={() => setSaveModalOpen(true)}
             onOpenCreateModal={() => setCreateModalOpen(true)}
+            onOpenMobileDownload={() => setMobileDownloadOpen(true)}
             shuffle={shuffle}
             onToggleShuffle={() => setShuffle((v) => !v)}
             onPlayShuffle={() => {
@@ -562,6 +645,15 @@ const handleSpotifyLoginSuccess=(u:SpotifyUser)=>{setSpotifyUser(u);setSpotifyAu
         configStatus={configStatus}
       />
       <ConfigGuideModal isOpen={configOpen} onClose={() => setConfigOpen(false)} configStatus={configStatus} />
+      
+      <MobileDownloadModal
+        isOpen={mobileDownloadOpen}
+        onClose={() => setMobileDownloadOpen(false)}
+        tracks={tracks}
+        playlistName={playlistData?.nome_playlist}
+        onTriggerPWAInstall={handleTriggerPWAInstall}
+        canInstallPWA={canInstallPWA}
+      />
     </div>
   );
 }

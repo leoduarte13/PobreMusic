@@ -250,6 +250,19 @@ export const Navbar: React.FC<NavbarProps> = ({
               </button>
             )}
 
+            {/* Mobile App & Playlist Download Button in Desktop Navbar */}
+            {onOpenMobileDownload && (
+              <button
+                id="btn-navbar-mobile-download"
+                onClick={onOpenMobileDownload}
+                className="min-h-[38px] flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-xs font-bold text-white shadow-md shadow-emerald-600/20 transition-all border border-emerald-400/40"
+                title="Instalar aplicativo mobile ou baixar playlists (.m3u, .json)"
+              >
+                <Smartphone className="w-3.5 h-3.5 stroke-[2.5]" />
+                <span>Instalar App</span>
+              </button>
+            )}
+
             {/* Config & Instructions Button */}
             <button
               id="btn-open-config-guide"
@@ -264,6 +277,19 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           {/* Mobile Right Controls (<md) - Clean & Compact */}
           <div className="flex md:hidden items-center gap-1.5">
+            {/* Quick Install/Download Button on Mobile Header */}
+            {onOpenMobileDownload && (
+              <button
+                id="btn-mobile-header-download"
+                onClick={onOpenMobileDownload}
+                className="min-h-[36px] flex items-center gap-1 px-2.5 py-1 rounded-xl bg-emerald-500 hover:bg-emerald-400 active:bg-emerald-600 text-zinc-950 font-black text-xs shadow-md shadow-emerald-500/20"
+                title="Instalar App ou Baixar Playlist"
+              >
+                <Smartphone className="w-3.5 h-3.5 stroke-[2.5]" />
+                <span>Baixar</span>
+              </button>
+            )}
+
             {/* Offline Badge on Mobile */}
             {isOffline && (
               <button
