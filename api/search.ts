@@ -5,7 +5,7 @@ const INSTANCES = [
   'https://pipedapi-libre.kavin.rocks',
   'https://pipedapi.adminforge.de',
   'https://pipedapi.reallyaweso.me',
-  'https://pipedapi.private.coffee'
+  'https://api.piped.private.coffee'
 ];
 
 function normalize(text: string) {
@@ -71,17 +71,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .sort((a:any,b:any) => score(b.titulo, nomeMusica, nomeArtista, b.canal) - score(a.titulo, nomeMusica, nomeArtista, a.canal));
       const best = ranked[0];
       if (!best) continue;
-      return res.status(200).json({
-        sucesso:true,
-        videoId:best.videoId,
-        titulo:best.titulo,
-        canal:best.canal,
-        duracao:best.duracao,
-        capa:best.capa,
-        origem:'piped',
-        instance,
-        score:score(best.titulo, nomeMusica, nomeArtista, best.canal)
-      });
+      return res.status(200).json({ sucesso:true, videoId:best.videoId, titulo:best.titulo, canal:best.canal, duracao:best.duracao, capa:best.capa, origem:'piped', instance, score:score(best.titulo, nomeMusica, nomeArtista, best.canal) });
     } catch (error:any) {
       lastError = String(error?.message || error);
     }
