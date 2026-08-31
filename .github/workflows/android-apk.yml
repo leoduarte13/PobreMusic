@@ -17,9 +17,9 @@ jobs:
         working-directory: android
         run: gradle assembleDebug --no-daemon
       - name: Rename APK
-        run: cp android/app/build/outputs/apk/debug/app-debug.apk android/app/build/outputs/apk/debug/PobreMusic-v1.1.apk
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk android/app/build/outputs/apk/debug/PobreMusic-v1.2.apk
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: PobreMusic-v1.1
-          path: android/app/build/outputs/apk/debug/PobreMusic-v1.1.apk
+          name: PobreMusic-v1.2
+          path: android/app/build/outputs/apk/debug/PobreMusic-v1.2.apk
