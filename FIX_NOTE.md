@@ -1,0 +1,1 @@
+PlaybackService and Android background playback need verification against the web player source. The APK build currently succeeds, but playback URL resolution must be tested end-to-end before release.
