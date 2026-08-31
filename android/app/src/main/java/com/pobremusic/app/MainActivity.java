@@ -10,6 +10,8 @@ import android.view.View;
 import android.widget.*;
 import androidx.core.content.ContextCompat;
 import androidx.media3.common.MediaItem;
+import androidx.media3.common.PlaybackException;
+import androidx.media3.common.Player;
 import androidx.media3.session.MediaController;
 import androidx.media3.session.SessionToken;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -26,6 +28,7 @@ public class MainActivity extends Activity {
     private ListenableFuture<MediaController> future;
     private MediaController controller;
     private final ExecutorService io=Executors.newCachedThreadPool();
+    private boolean internalChange=false;
 
     private int dp(int v){return Math.round(v*getResources().getDisplayMetrics().density);}
     private TextView text(String s,float z,int c){TextView v=new TextView(this);v.setText(s);v.setTextSize(z);v.setTextColor(c);return v;}
@@ -36,26 +39,23 @@ public class MainActivity extends Activity {
 
     private void build(){
         LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setBackgroundColor(Color.rgb(10,10,10));root.setPadding(dp(14),dp(10),dp(14),0);
-
         LinearLayout header=new LinearLayout(this);header.setGravity(Gravity.CENTER_VERTICAL);header.setPadding(0,0,0,dp(8));
         TextView logo=text("♫",30,Color.rgb(30,215,96));logo.setGravity(Gravity.CENTER);logo.setBackground(bg(Color.rgb(25,25,25),14));header.addView(logo,lp(52,52));
         LinearLayout titles=new LinearLayout(this);titles.setOrientation(LinearLayout.VERTICAL);titles.setPadding(dp(12),0,0,0);
         TextView title=text("PobreMusic",24,Color.WHITE);title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);titles.addView(title,lp(-1,32));
         TextView sub=text("Spotify Playlist Player",14,Color.LTGRAY);titles.addView(sub,lp(-1,22));header.addView(titles,lp(0,52));((LinearLayout.LayoutParams)titles.getLayoutParams()).weight=1;root.addView(header,lp(-1,60));
-
         TextView section=text("IMPORTAR PLAYLIST",12,Color.rgb(30,215,96));section.setTypeface(Typeface.DEFAULT,Typeface.BOLD);root.addView(section,lp(-1,22));
         url=new EditText(this);url.setHint("Cole o link da playlist Spotify");url.setHintTextColor(Color.rgb(140,140,140));url.setTextColor(Color.WHITE);url.setTextSize(15);url.setSingleLine(true);url.setPadding(dp(14),0,dp(14),0);url.setBackground(bg(Color.rgb(27,27,27),12));root.addView(url,lp(-1,52));
         Button imp=new Button(this);imp.setText("Importar playlist");imp.setTextSize(14);imp.setTextColor(Color.WHITE);imp.setAllCaps(false);imp.setBackground(bg(Color.rgb(29,185,84),12));imp.setOnClickListener(v->importPlaylist());LinearLayout.LayoutParams ip=lp(-1,48);ip.topMargin=dp(8);root.addView(imp,ip);
-
         LinearLayout info=new LinearLayout(this);info.setGravity(Gravity.CENTER_VERTICAL);status=text("Cole uma playlist pública para começar",13,Color.LTGRAY);info.addView(status,lp(0,38));((LinearLayout.LayoutParams)status.getLayoutParams()).weight=1;count=text("0 músicas",13,Color.GRAY);count.setGravity(Gravity.CENTER);info.addView(count,lp(90,38));root.addView(info,lp(-1,46));
-
         ScrollView sv=new ScrollView(this);sv.setFillViewport(true);tracks=new LinearLayout(this);tracks.setOrientation(LinearLayout.VERTICAL);tracks.setPadding(0,dp(2),0,dp(10));sv.addView(tracks);root.addView(sv,new LinearLayout.LayoutParams(-1,0,1));
-
         LinearLayout player=new LinearLayout(this);player.setOrientation(LinearLayout.VERTICAL);player.setPadding(dp(12),dp(8),dp(12),dp(6));player.setBackground(bg(Color.rgb(27,27,27),16));
         now=text("Nenhuma música selecionada",15,Color.WHITE);now.setTypeface(Typeface.DEFAULT,Typeface.BOLD);now.setGravity(Gravity.CENTER);now.setSingleLine(true);now.setEllipsize(android.text.TextUtils.TruncateAt.MARQUEE);player.addView(now,lp(-1,30));
         TextView hint=text("Toque em uma música para reproduzir",11,Color.GRAY);hint.setGravity(Gravity.CENTER);player.addView(hint,lp(-1,20));
         LinearLayout controls=new LinearLayout(this);controls.setGravity(Gravity.CENTER);Button prev=control("⏮");Button play=control("▶");Button next=control("⏭");controls.addView(prev,lp(64,46));controls.addView(play,lp(86,46));controls.addView(next,lp(64,46));player.addView(controls,lp(-1,48));
-        play.setOnClickListener(v->{if(controller!=null){if(controller.isPlaying())controller.pause();else controller.play();}});prev.setOnClickListener(v->{if(controller!=null)controller.seekToPreviousMediaItem();});next.setOnClickListener(v->{if(controller!=null)controller.seekToNextMediaItem();});
+        play.setOnClickListener(v->{if(controller!=null){if(controller.isPlaying())controller.pause();else if(controller.getPlaybackState()!=Player.STATE_IDLE)controller.play();}});
+        prev.setOnClickListener(v->{if(controller!=null && controller.hasPreviousMediaItem())controller.seekToPreviousMediaItem();});
+        next.setOnClickListener(v->{if(controller!=null && controller.hasNextMediaItem())controller.seekToNextMediaItem();});
         root.addView(player,lp(-1,116));setContentView(root);
     }
 
@@ -81,11 +81,47 @@ public class MainActivity extends Activity {
 
     private void playTrack(String name,String artist){
         status.setText("Procurando áudio...");now.setText(name+" — "+artist);
-        io.execute(()->{try{String q=API+"/api/search?nome_musica="+URLEncoder.encode(name,"UTF-8")+"&nome_artista="+URLEncoder.encode(artist,"UTF-8");JSONObject r=new JSONObject(get(q));if(!r.optBoolean("sucesso"))throw new Exception(r.optString("error","Música não encontrada"));String id=r.getString("videoId");String audio=API+"/api/audio?videoId="+URLEncoder.encode(id,"UTF-8");ensure(()->{controller.setMediaItem(MediaItem.fromUri(audio));controller.prepare();controller.play();status.setText("▶ Reproduzindo");now.setText(name+" — "+artist);});}catch(Exception e){runOnUiThread(()->status.setText("Não foi possível reproduzir: "+e.getMessage()));}});
+        io.execute(()->{try{
+            String q=API+"/api/search?nome_musica="+URLEncoder.encode(name,"UTF-8")+"&nome_artista="+URLEncoder.encode(artist,"UTF-8");
+            JSONObject r=new JSONObject(get(q));
+            if(!r.optBoolean("sucesso"))throw new Exception(r.optString("error","Música não encontrada"));
+            String id=r.getString("videoId");
+            String stream=API+"/api/stream?videoId="+URLEncoder.encode(id,"UTF-8");
+            JSONObject sr=new JSONObject(get(stream));
+            if(!sr.optBoolean("sucesso"))throw new Exception(sr.optString("error","Fonte de áudio indisponível"));
+            String audio=sr.getString("url");
+            ensure(()->startSingleTrack(audio,name,artist));
+        }catch(Exception e){runOnUiThread(()->status.setText("Não foi possível reproduzir: "+e.getMessage()));}});
     }
 
-    private void ensure(Runnable r){if(controller!=null){runOnUiThread(r);return;}runOnUiThread(()->status.setText("Preparando player..."));future=new MediaController.Builder(this,new SessionToken(this,new android.content.ComponentName(this,PlaybackService.class))).buildAsync();future.addListener(()->{try{controller=future.get();runOnUiThread(r);}catch(Exception e){runOnUiThread(()->status.setText("Erro no player: "+e.getMessage()));}},ContextCompat.getMainExecutor(this));}
+    private void startSingleTrack(String audio,String name,String artist){
+        if(controller==null)return;
+        internalChange=true;
+        controller.stop();
+        controller.clearMediaItems();
+        MediaItem item=new MediaItem.Builder().setUri(audio).setMediaMetadata(new androidx.media3.common.MediaMetadata.Builder().setTitle(name).setArtist(artist).build()).build();
+        controller.setMediaItem(item);
+        controller.prepare();
+        controller.play();
+        now.setText(name+" — "+artist);
+        status.setText("▶ Reproduzindo");
+        internalChange=false;
+    }
 
-    private String get(String s)throws Exception{HttpURLConnection c=(HttpURLConnection)new URL(s).openConnection();c.setConnectTimeout(10000);c.setReadTimeout(20000);c.setRequestProperty("Accept","application/json");int code=c.getResponseCode();InputStream in=code>=400?c.getErrorStream():c.getInputStream();try(BufferedReader br=new BufferedReader(new InputStreamReader(in))){StringBuilder b=new StringBuilder();String l;while((l=br.readLine())!=null)b.append(l);if(code>=400)throw new IOException("HTTP "+code);return b.toString();}finally{c.disconnect();}}
+    private void ensure(Runnable r){
+        if(controller!=null){runOnUiThread(r);return;}
+        runOnUiThread(()->status.setText("Preparando player..."));
+        future=new MediaController.Builder(this,new SessionToken(this,new android.content.ComponentName(this,PlaybackService.class))).buildAsync();
+        future.addListener(()->{try{
+            controller=future.get();
+            controller.addListener(new Player.Listener(){
+                @Override public void onPlayerError(PlaybackException error){runOnUiThread(()->status.setText("Erro no áudio: "+error.errorCodeName));}
+                @Override public void onMediaItemTransition(MediaItem item,int reason){if(!internalChange && item!=null && item.mediaMetadata.title!=null)runOnUiThread(()->now.setText(item.mediaMetadata.title));}
+            });
+            runOnUiThread(r);
+        }catch(Exception e){runOnUiThread(()->status.setText("Erro no player: "+e.getMessage()));}},ContextCompat.getMainExecutor(this));
+    }
+
+    private String get(String s)throws Exception{HttpURLConnection c=(HttpURLConnection)new URL(s).openConnection();c.setConnectTimeout(10000);c.setReadTimeout(30000);c.setRequestProperty("Accept","application/json");int code=c.getResponseCode();InputStream in=code>=400?c.getErrorStream():c.getInputStream();try(BufferedReader br=new BufferedReader(new InputStreamReader(in))){StringBuilder b=new StringBuilder();String l;while((l=br.readLine())!=null)b.append(l);if(code>=400)throw new IOException("HTTP "+code);return b.toString();}finally{c.disconnect();}}
     @Override protected void onDestroy(){io.shutdownNow();if(future!=null)MediaController.releaseFuture(future);super.onDestroy();}
 }
