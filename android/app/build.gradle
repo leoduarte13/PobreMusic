@@ -1,7 +1,7 @@
 plugins { id 'com.android.application' }
 
 android { namespace 'com.pobremusic.app'; compileSdk 35
-    defaultConfig { applicationId 'com.pobremusic.app'; minSdk 23; targetSdk 35; versionCode 3; versionName 'v1.2' }
+    defaultConfig { applicationId 'com.pobremusic.app'; minSdk 23; targetSdk 35; versionCode 4; versionName 'v1.3' }
 }
 
 dependencies {
