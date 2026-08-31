@@ -60,9 +60,38 @@ function extractVideoId(value: unknown) {
 }
 
 async function searchTrack(query: string) {
-  for (const instance of FALLBACK_INSTANCES) {
+  // Method 1: YouTube Search Scraping (Fastest and 100% reliable)
+  try {
+    const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 4000);
+    const res = await fetch(searchUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+        'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7'
+      },
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+    if (res.ok) {
+      const html = await res.text();
+      const matches = [...html.matchAll(/"videoId":"([A-Za-z0-9_-]{11})"/g)].map(m => m[1]);
+      const unique = [...new Set(matches)];
+      if (unique.length > 0) {
+        return {
+          items: unique.map(id => ({ url: `https://www.youtube.com/watch?v=${id}`, id })),
+          instance: 'youtube'
+        };
+      }
+    }
+  } catch (e) {
+    // Fallback to piped instances
+  }
+
+  // Method 2: Piped Instances Fallback
+  for (const instance of FALLBACK_INSTANCES) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3500);
     try {
       const url = `${instance}/search?q=${encodeURIComponent(query)}&filter=music_songs`;
       const res = await fetch(url, { headers: { Accept: 'application/json', 'User-Agent': 'PobreMusic/1.0' }, signal: controller.signal });
@@ -275,7 +304,7 @@ async function start() {
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*all', (_req, res) => {
+    app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

@@ -97,6 +97,39 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const query = `${nomeMusica} ${nomeArtista}`.trim();
   if (!nomeMusica) return res.status(400).json({ sucesso:false, error:'Nome da música não informado.' });
 
+  // 1. First priority: Direct YouTube Web Search (instant and reliable)
+  try {
+    const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4000);
+    const ytRes = await fetch(searchUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+        'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7'
+      },
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+    if (ytRes.ok) {
+      const html = await ytRes.text();
+      const matches = [...html.matchAll(/"videoId":"([A-Za-z0-9_-]{11})"/g)].map(m => m[1]);
+      const unique = [...new Set(matches)];
+      if (unique.length > 0) {
+        return res.status(200).json({
+          sucesso: true,
+          videoId: unique[0],
+          titulo: `${nomeMusica} - ${nomeArtista}`,
+          canal: nomeArtista,
+          duracao: 180,
+          capa: `https://i.ytimg.com/vi/${unique[0]}/hqdefault.jpg`,
+          origem: 'youtube'
+        });
+      }
+    }
+  } catch (e) {
+    // fallback to piped instances
+  }
+
   const instances = await getInstances();
   let lastError = '';
   for (const instance of instances) {

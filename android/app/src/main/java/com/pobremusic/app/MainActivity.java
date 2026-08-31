@@ -1,25 +1,25 @@
 package com.pobremusic.app;
 
 import android.app.Activity;
-import android.content.ComponentName;
+import android.content.Context;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
+import android.view.WindowManager;
+import android.webkit.JavascriptInterface;
+import android.webkit.WebChromeClient;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
 import android.widget.*;
-import androidx.core.content.ContextCompat;
-import androidx.media3.common.MediaItem;
-import androidx.media3.common.MediaMetadata;
-import androidx.media3.common.PlaybackException;
-import androidx.media3.common.Player;
-import androidx.media3.session.MediaController;
-import androidx.media3.session.SessionToken;
-import com.google.common.util.concurrent.ListenableFuture;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -37,39 +37,33 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
-    private static final String CLOUD_RUN_API = "https://ais-pre-scpvhniuyqfisqru6bsquo-19904035643.us-west1.run.app";
-    private static final String[] PIPED_INSTANCES = {
-        "https://pipedapi.kavin.rocks",
-        "https://pipedapi.leptons.xyz",
-        "https://pipedapi.adminforge.de",
-        "https://api.piped.yt",
-        "https://piped-api.privacy.com.de",
-        "https://pipedapi.drgns.space",
-        "https://pipedapi.owo.si"
-    };
+    private static final String BACKEND_API = "https://ais-pre-scpvhniuyqfisqru6bsquo-19904035643.us-west1.run.app";
 
     private LinearLayout tracksContainer;
     private TextView statusText, nowPlayingTitle, nowPlayingArtist, countText;
     private EditText urlInput;
     private Button playPauseBtn;
-    private ListenableFuture<MediaController> controllerFuture;
-    private MediaController mediaController;
+    private WebView audioPlayerWebView;
+
     private final ExecutorService executor = Executors.newCachedThreadPool();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     private final List<TrackInfo> trackList = new ArrayList<>();
+    private final List<View> trackRowViews = new ArrayList<>();
     private int currentTrackIndex = -1;
+    private boolean isPlaying = false;
+    private boolean playerReady = false;
+    private String pendingVideoId = null;
+
+    private PowerManager.WakeLock wakeLock;
 
     static class TrackInfo {
         String name;
         String artist;
-        String coverUrl;
-        long durationMs;
-        TrackInfo(String name, String artist, String coverUrl, long durationMs) {
+        String videoId;
+        TrackInfo(String name, String artist) {
             this.name = name;
             this.artist = artist;
-            this.coverUrl = coverUrl;
-            this.durationMs = durationMs;
         }
     }
 
@@ -99,8 +93,31 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+
+        PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        if (powerManager != null) {
+            wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "PobreMusic:PlaybackWakeLock");
+        }
+
         buildUi();
-        initPlayerController();
+        initAudioEngine();
+    }
+
+    private void acquireWakeLock() {
+        if (wakeLock != null && !wakeLock.isHeld()) {
+            try {
+                wakeLock.acquire(12 * 60 * 60 * 1000L); // 12 hours max
+            } catch (Exception ignored) {}
+        }
+    }
+
+    private void releaseWakeLock() {
+        if (wakeLock != null && wakeLock.isHeld()) {
+            try {
+                wakeLock.release();
+            } catch (Exception ignored) {}
+        }
     }
 
     private void buildUi() {
@@ -114,25 +131,25 @@ public class MainActivity extends Activity {
         header.setGravity(Gravity.CENTER_VERTICAL);
         header.setOrientation(LinearLayout.HORIZONTAL);
 
-        TextView logo = createText("♫", 24, Color.rgb(29, 185, 84));
+        TextView logo = createText("♫", 22, Color.rgb(29, 185, 84));
         logo.setGravity(Gravity.CENTER);
         logo.setBackground(createBackground(Color.rgb(30, 30, 30), 12));
-        header.addView(logo, createLp(48, 48));
+        header.addView(logo, createLp(46, 46));
 
         LinearLayout titles = new LinearLayout(this);
         titles.setOrientation(LinearLayout.VERTICAL);
         titles.setPadding(dp(12), 0, 0, 0);
-        TextView appTitle = createText("PobreMusic", 22, Color.WHITE);
+        TextView appTitle = createText("PobreMusic", 20, Color.WHITE);
         appTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         titles.addView(appTitle, createLp(-1, -2));
-        TextView appSubtitle = createText("Reprodutor de Playlists do Spotify", 13, Color.rgb(179, 179, 179));
+        TextView appSubtitle = createText("Reprodutor de Playlists do Spotify", 12, Color.rgb(179, 179, 179));
         titles.addView(appSubtitle, createLp(-1, -2));
         header.addView(titles, new LinearLayout.LayoutParams(0, -2, 1));
         root.addView(header, createLp(-1, -2));
 
         // Spacer
         View spacer1 = new View(this);
-        root.addView(spacer1, createLp(-1, 14));
+        root.addView(spacer1, createLp(-1, 12));
 
         // Input Card
         LinearLayout inputCard = new LinearLayout(this);
@@ -145,7 +162,7 @@ public class MainActivity extends Activity {
         inputCard.addView(sectionLabel, createLp(-1, -2));
 
         urlInput = new EditText(this);
-        urlInput.setHint("Link público do Spotify (playlist ou álbum)");
+        urlInput.setHint("Link público do Spotify (playlist, álbum ou música)");
         urlInput.setHintTextColor(Color.rgb(130, 130, 130));
         urlInput.setTextColor(Color.WHITE);
         urlInput.setTextSize(14);
@@ -228,6 +245,11 @@ public class MainActivity extends Activity {
 
         root.addView(playerBar, createLp(-1, -2));
 
+        // Hidden Audio Engine WebView (1x1 px)
+        audioPlayerWebView = new WebView(this);
+        audioPlayerWebView.setVisibility(View.GONE);
+        root.addView(audioPlayerWebView, new LinearLayout.LayoutParams(1, 1));
+
         setContentView(root);
     }
 
@@ -241,68 +263,91 @@ public class MainActivity extends Activity {
         return b;
     }
 
-    private void initPlayerController() {
-        ComponentName component = new ComponentName(this, PlaybackService.class);
-        SessionToken token = new SessionToken(this, component);
-        controllerFuture = new MediaController.Builder(this, token).buildAsync();
-        controllerFuture.addListener(() -> {
-            try {
-                mediaController = controllerFuture.get();
-                mediaController.setRepeatMode(Player.REPEAT_MODE_OFF);
-                mediaController.addListener(new Player.Listener() {
-                    @Override
-                    public void onPlaybackStateChanged(int playbackState) {
-                        mainHandler.post(() -> {
-                            if (playbackState == Player.STATE_ENDED) {
-                                playNextTrack();
-                            } else if (playbackState == Player.STATE_READY) {
-                                updatePlayPauseButton();
-                            }
-                        });
-                    }
+    private void initAudioEngine() {
+        WebSettings settings = audioPlayerWebView.getSettings();
+        settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(true);
+        settings.setMediaPlaybackRequiresUserGesture(false);
+        settings.setUserAgentString("Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36");
 
-                    @Override
-                    public void onIsPlayingChanged(boolean isPlaying) {
-                        mainHandler.post(() -> updatePlayPauseButton());
-                    }
+        audioPlayerWebView.setWebViewClient(new WebViewClient());
+        audioPlayerWebView.setWebChromeClient(new WebChromeClient());
 
-                    @Override
-                    public void onPlayerError(PlaybackException error) {
-                        mainHandler.post(() -> {
-                            statusText.setText("Erro ao reproduzir áudio: " + error.getErrorCodeName());
-                            updatePlayPauseButton();
-                        });
+        audioPlayerWebView.addJavascriptInterface(new Object() {
+            @JavascriptInterface
+            public void onReady() {
+                mainHandler.post(() -> {
+                    playerReady = true;
+                    if (pendingVideoId != null) {
+                        String id = pendingVideoId;
+                        pendingVideoId = null;
+                        loadAndPlayVideoId(id);
                     }
                 });
-            } catch (Exception e) {
-                mainHandler.post(() -> statusText.setText("Erro ao inicializar serviço de áudio."));
             }
-        }, ContextCompat.getMainExecutor(this));
+
+            @JavascriptInterface
+            public void onPlaying() {
+                mainHandler.post(() -> {
+                    isPlaying = true;
+                    acquireWakeLock();
+                    statusText.setText("▶ Reproduzindo");
+                    playPauseBtn.setText("⏸");
+                });
+            }
+
+            @JavascriptInterface
+            public void onPaused() {
+                mainHandler.post(() -> {
+                    isPlaying = false;
+                    releaseWakeLock();
+                    statusText.setText("⏸ Pausado");
+                    playPauseBtn.setText("▶");
+                });
+            }
+
+            @JavascriptInterface
+            public void onBuffering() {
+                mainHandler.post(() -> statusText.setText("⏳ Carregando áudio..."));
+            }
+
+            @JavascriptInterface
+            public void onEnded() {
+                mainHandler.post(() -> playNextTrack());
+            }
+
+            @JavascriptInterface
+            public void onError(int code) {
+                mainHandler.post(() -> {
+                    statusText.setText("Tentando próxima faixa...");
+                    playNextTrack();
+                });
+            }
+        }, "PobreBridge");
+
+        String html = "<!DOCTYPE html><html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"><style>body{margin:0;background:#000;}</style></head><body><div id=\"player\"></div><script>var tag=document.createElement('script');tag.src='https://www.youtube.com/iframe_api';var first=document.getElementsByTagName('script')[0];first.parentNode.insertBefore(tag,first);var player=null;function onYouTubeIframeAPIReady(){player=new YT.Player('player',{height:'100%',width:'100%',videoId:'dQw4w9WgXcQ',playerVars:{autoplay:0,controls:0,playsinline:1,rel:0,disablekb:1},events:{onReady:function(){if(window.PobreBridge)PobreBridge.onReady();},onStateChange:function(e){if(!window.PobreBridge)return;if(e.data===1)PobreBridge.onPlaying();else if(e.data===2)PobreBridge.onPaused();else if(e.data===3)PobreBridge.onBuffering();else if(e.data===0)PobreBridge.onEnded();},onError:function(e){if(window.PobreBridge)PobreBridge.onError(e.data);}}});}function playVideo(id){if(player&&player.loadVideoById){player.loadVideoById(id);player.playVideo();}}function pauseVideo(){if(player&&player.pauseVideo){player.pauseVideo();}}function resumeVideo(){if(player&&player.playVideo){player.playVideo();}}</script></body></html>";
+
+        audioPlayerWebView.loadDataWithBaseURL("https://www.youtube.com", html, "text/html", "UTF-8", null);
     }
 
-    private void updatePlayPauseButton() {
-        if (mediaController != null && mediaController.isPlaying()) {
-            playPauseBtn.setText("⏸");
-            statusText.setText("▶ Reproduzindo");
-        } else {
-            playPauseBtn.setText("▶");
+    private void loadAndPlayVideoId(String videoId) {
+        if (!playerReady) {
+            pendingVideoId = videoId;
+            return;
         }
+        audioPlayerWebView.evaluateJavascript("playVideo('" + videoId + "');", null);
     }
 
     private void togglePlayPause() {
-        if (mediaController == null) return;
-        if (mediaController.isPlaying()) {
-            mediaController.pause();
-        } else {
-            if (mediaController.getPlaybackState() != Player.STATE_IDLE) {
-                mediaController.play();
-            } else if (currentTrackIndex >= 0 && currentTrackIndex < trackList.size()) {
-                playTrackByIndex(currentTrackIndex);
-            } else if (!trackList.isEmpty()) {
-                playTrackByIndex(0);
-            }
+        if (currentTrackIndex < 0 && !trackList.isEmpty()) {
+            playTrackByIndex(0);
+            return;
         }
-        updatePlayPauseButton();
+        if (isPlaying) {
+            audioPlayerWebView.evaluateJavascript("pauseVideo();", null);
+        } else {
+            audioPlayerWebView.evaluateJavascript("resumeVideo();", null);
+        }
     }
 
     private void playNextTrack() {
@@ -311,9 +356,10 @@ public class MainActivity extends Activity {
         if (next < trackList.size()) {
             playTrackByIndex(next);
         } else {
-            currentTrackIndex = -1;
             statusText.setText("Fim da playlist");
-            updatePlayPauseButton();
+            isPlaying = false;
+            releaseWakeLock();
+            playPauseBtn.setText("▶");
         }
     }
 
@@ -333,6 +379,7 @@ public class MainActivity extends Activity {
         statusText.setText("Importando músicas do Spotify...");
         countText.setText("...");
         tracksContainer.removeAllViews();
+        trackRowViews.clear();
         trackList.clear();
         currentTrackIndex = -1;
 
@@ -347,7 +394,7 @@ public class MainActivity extends Activity {
                 mainHandler.post(() -> {
                     trackList.addAll(parsed);
                     countText.setText(parsed.size() + " músicas");
-                    statusText.setText("Playlist carregada! Toque em uma música.");
+                    statusText.setText("Playlist carregada! Toque em uma música para tocar.");
                     renderTrackRows();
                 });
             } catch (Exception e) {
@@ -369,7 +416,7 @@ public class MainActivity extends Activity {
     private List<TrackInfo> fetchSpotifyTracks(String spotifyId, String rawUrl) {
         List<TrackInfo> list = new ArrayList<>();
 
-        // Attempt 1: Direct Spotify Embed scraping
+        // Method 1: Direct Spotify Embed scraping
         try {
             String embedUrl = "https://open.spotify.com/embed/playlist/" + spotifyId + "?utm_source=generator&theme=0";
             String html = httpGet(embedUrl, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
@@ -388,8 +435,7 @@ public class MainActivity extends Activity {
                             JSONObject tr = items.getJSONObject(i);
                             String name = tr.optString("title", tr.optString("name", "Música"));
                             String artist = tr.optString("subtitle", tr.optString("artist", "Artista"));
-                            long dur = tr.optLong("duration", 180000);
-                            list.add(new TrackInfo(name, artist, "", dur));
+                            list.add(new TrackInfo(name, artist));
                         }
                     }
                 }
@@ -398,9 +444,9 @@ public class MainActivity extends Activity {
 
         if (!list.isEmpty()) return list;
 
-        // Attempt 2: Server API endpoint fallback
+        // Method 2: Server API endpoint fallback
         try {
-            String apiUrl = CLOUD_RUN_API + "/api/public-playlist?url=" + URLEncoder.encode(rawUrl, "UTF-8");
+            String apiUrl = BACKEND_API + "/api/public-playlist?url=" + URLEncoder.encode(rawUrl, "UTF-8");
             String response = httpGet(apiUrl, "PobreMusicAndroid/1.0");
             JSONObject obj = new JSONObject(response);
             if (obj.optBoolean("sucesso")) {
@@ -409,9 +455,7 @@ public class MainActivity extends Activity {
                     JSONObject tr = arr.getJSONObject(i);
                     String name = tr.optString("nome_musica", "Música");
                     String artist = tr.optString("nome_artista", "Artista");
-                    String cover = tr.optString("capa", "");
-                    long dur = tr.optLong("duracao_ms", 180000);
-                    list.add(new TrackInfo(name, artist, cover, dur));
+                    list.add(new TrackInfo(name, artist));
                 }
             }
         } catch (Exception ignored) {}
@@ -421,6 +465,8 @@ public class MainActivity extends Activity {
 
     private void renderTrackRows() {
         tracksContainer.removeAllViews();
+        trackRowViews.clear();
+
         for (int i = 0; i < trackList.size(); i++) {
             final int index = i;
             final TrackInfo track = trackList.get(i);
@@ -428,7 +474,7 @@ public class MainActivity extends Activity {
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setPadding(dp(12), dp(8), dp(12), dp(8));
+            row.setPadding(dp(12), dp(10), dp(12), dp(10));
             row.setBackground(createBackground(Color.rgb(24, 24, 24), 8));
 
             TextView num = createText(String.valueOf(i + 1), 12, Color.rgb(130, 130, 130));
@@ -460,6 +506,18 @@ public class MainActivity extends Activity {
 
             row.setOnClickListener(v -> playTrackByIndex(index));
             tracksContainer.addView(row, rowLp);
+            trackRowViews.add(row);
+        }
+    }
+
+    private void updateActiveRowVisuals(int activeIndex) {
+        for (int i = 0; i < trackRowViews.size(); i++) {
+            View row = trackRowViews.get(i);
+            if (i == activeIndex) {
+                row.setBackground(createBackground(Color.rgb(35, 60, 42), 8));
+            } else {
+                row.setBackground(createBackground(Color.rgb(24, 24, 24), 8));
+            }
         }
     }
 
@@ -468,111 +526,61 @@ public class MainActivity extends Activity {
         currentTrackIndex = index;
         TrackInfo track = trackList.get(index);
 
+        updateActiveRowVisuals(index);
         nowPlayingTitle.setText(track.name);
         nowPlayingArtist.setText(track.artist);
-        statusText.setText("🔍 Buscando áudio para: " + track.name);
+        statusText.setText("🔍 Buscando áudio...");
+
+        if (track.videoId != null && !track.videoId.isEmpty()) {
+            loadAndPlayVideoId(track.videoId);
+            return;
+        }
 
         executor.execute(() -> {
             try {
-                String audioUrl = resolveAudioStreamUrl(track.name, track.artist);
-                if (audioUrl == null || audioUrl.isEmpty()) {
-                    throw new Exception("Não foi possível obter áudio dos servidores.");
+                String videoId = searchVideoId(track.name, track.artist);
+                if (videoId == null || videoId.isEmpty()) {
+                    throw new Exception("Música não encontrada.");
                 }
+                track.videoId = videoId;
 
                 mainHandler.post(() -> {
-                    startPlayback(audioUrl, track.name, track.artist);
+                    statusText.setText("▶ Carregando player...");
+                    loadAndPlayVideoId(videoId);
                 });
             } catch (Exception e) {
                 mainHandler.post(() -> {
-                    statusText.setText("Erro ao obter música: " + e.getMessage());
-                    updatePlayPauseButton();
+                    statusText.setText("Não foi possível carregar: " + e.getMessage());
+                    playPauseBtn.setText("▶");
                 });
             }
         });
     }
 
-    private String resolveAudioStreamUrl(String trackName, String artistName) {
-        String query = trackName + " " + artistName;
+    private String searchVideoId(String trackName, String artistName) {
+        String query = (trackName + " " + artistName).trim();
 
-        // Method 1: Piped Instances Direct Query
-        for (String instance : PIPED_INSTANCES) {
-            try {
-                String searchUrl = instance + "/search?q=" + URLEncoder.encode(query, "UTF-8") + "&filter=music_songs";
-                String json = httpGet(searchUrl, "PobreMusicAndroid/1.0");
-                JSONObject searchResult = new JSONObject(json);
-                JSONArray items = searchResult.optJSONArray("items");
-                if (items != null && items.length() > 0) {
-                    JSONObject firstItem = items.getJSONObject(0);
-                    String videoId = extractVideoId(firstItem.optString("url", firstItem.optString("id", "")));
-                    if (!videoId.isEmpty()) {
-                        String streamUrl = instance + "/streams/" + videoId;
-                        String streamJson = httpGet(streamUrl, "PobreMusicAndroid/1.0");
-                        JSONObject streamObj = new JSONObject(streamJson);
-                        JSONArray audioStreams = streamObj.optJSONArray("audioStreams");
-                        if (audioStreams != null && audioStreams.length() > 0) {
-                            // Find the best audio stream
-                            for (int i = 0; i < audioStreams.length(); i++) {
-                                JSONObject st = audioStreams.getJSONObject(i);
-                                String u = st.optString("url", "");
-                                if (u.startsWith("http")) {
-                                    return u;
-                                }
-                            }
-                        }
-                    }
-                }
-            } catch (Exception ignored) {}
-        }
-
-        // Method 2: Cloud Run Backend Proxy
+        // Step 1: Direct YouTube Search Scraping (Ultra fast and reliable)
         try {
-            String searchUrl = CLOUD_RUN_API + "/api/search?nome_musica=" + URLEncoder.encode(trackName, "UTF-8") + "&nome_artista=" + URLEncoder.encode(artistName, "UTF-8");
-            String json = httpGet(searchUrl, "PobreMusicAndroid/1.0");
-            JSONObject res = new JSONObject(json);
-            if (res.optBoolean("sucesso")) {
-                String videoId = res.getString("videoId");
-                return CLOUD_RUN_API + "/api/audio?videoId=" + URLEncoder.encode(videoId, "UTF-8");
+            String searchUrl = "https://www.youtube.com/results?search_query=" + URLEncoder.encode(query, "UTF-8");
+            String html = httpGet(searchUrl, "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36");
+            Matcher m = Pattern.compile("\"videoId\":\"([A-Za-z0-9_-]{11})\"").matcher(html);
+            if (m.find()) {
+                return m.group(1);
             }
         } catch (Exception ignored) {}
 
-        return null;
-    }
-
-    private String extractVideoId(String text) {
-        Matcher m = Pattern.compile("([A-Za-z0-9_-]{11})").matcher(text);
-        if (m.find()) return m.group(1);
-        return "";
-    }
-
-    private void startPlayback(String streamUrl, String title, String artist) {
-        if (mediaController == null) {
-            statusText.setText("Aguardando inicialização do player...");
-            return;
-        }
-
+        // Step 2: Backend API Fallback
         try {
-            mediaController.stop();
-            mediaController.clearMediaItems();
+            String apiUrl = BACKEND_API + "/api/search?nome_musica=" + URLEncoder.encode(trackName, "UTF-8") + "&nome_artista=" + URLEncoder.encode(artistName, "UTF-8");
+            String json = httpGet(apiUrl, "PobreMusicAndroid/1.0");
+            JSONObject res = new JSONObject(json);
+            if (res.optBoolean("sucesso")) {
+                return res.optString("videoId", "");
+            }
+        } catch (Exception ignored) {}
 
-            MediaMetadata meta = new MediaMetadata.Builder()
-                .setTitle(title)
-                .setArtist(artist)
-                .build();
-
-            MediaItem item = new MediaItem.Builder()
-                .setUri(streamUrl)
-                .setMediaMetadata(meta)
-                .build();
-
-            mediaController.setMediaItem(item);
-            mediaController.prepare();
-            mediaController.play();
-
-            statusText.setText("▶ Reproduzindo: " + title);
-            playPauseBtn.setText("⏸");
-        } catch (Exception e) {
-            statusText.setText("Erro ao iniciar áudio: " + e.getMessage());
-        }
+        return "";
     }
 
     private String httpGet(String urlStr, String userAgent) throws Exception {
@@ -584,7 +592,7 @@ public class MainActivity extends Activity {
 
         int code = conn.getResponseCode();
         InputStream is = code >= 400 ? conn.getErrorStream() : conn.getInputStream();
-        if (is == null) throw new Exception("Sem resposta do servidor (HTTP " + code + ")");
+        if (is == null) throw new Exception("Sem resposta (HTTP " + code + ")");
 
         try (BufferedReader br = new BufferedReader(new InputStreamReader(is))) {
             StringBuilder sb = new StringBuilder();
@@ -601,9 +609,10 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        releaseWakeLock();
         executor.shutdownNow();
-        if (controllerFuture != null) {
-            MediaController.releaseFuture(controllerFuture);
+        if (audioPlayerWebView != null) {
+            audioPlayerWebView.destroy();
         }
         super.onDestroy();
     }
