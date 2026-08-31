@@ -5,7 +5,6 @@ import android.os.Bundle;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.view.Gravity;
-import android.view.View;
 import android.widget.*;
 import androidx.core.content.ContextCompat;
 import androidx.media3.common.MediaItem;
@@ -45,6 +44,6 @@ public class MainActivity extends Activity {
     private void add(JSONObject t,int n){runOnUiThread(()->{String name=t.optString("nome_musica"),artist=t.optString("nome_artista");TextView row=text(n+". "+name+"\n"+artist,16,Color.WHITE);row.setPadding(14,14,8,14);row.setBackgroundColor(Color.rgb(22,22,22));row.setOnClickListener(v->playTrack(name,artist));tracks.addView(row,new LinearLayout.LayoutParams(-1,78));});}
     private void playTrack(String name,String artist){status.setText("Encontrando: "+name);io.execute(()->{try{String q=API+"/api/search?nome_musica="+URLEncoder.encode(name,"UTF-8")+"&nome_artista="+URLEncoder.encode(artist,"UTF-8");JSONObject r=new JSONObject(get(q));if(!r.optBoolean("sucesso"))throw new Exception(r.optString("error","Música não encontrada"));String id=r.getString("videoId");String audio=API+"/api/audio?videoId="+URLEncoder.encode(id,"UTF-8");ensure(()->{controller.setMediaItem(MediaItem.fromUri(audio));controller.prepare();controller.play();now.setText(name+" — "+artist);status.setText("▶ Tocando");});}catch(Exception e){runOnUiThread(()->status.setText("Não foi possível tocar: "+e.getMessage()));}});}
     private void ensure(Runnable r){if(controller!=null){runOnUiThread(r);return;}runOnUiThread(()->status.setText("Preparando player..."));future=new MediaController.Builder(this,new SessionToken(this,new android.content.ComponentName(this,PlaybackService.class))).buildAsync();future.addListener(()->{try{controller=future.get();runOnUiThread(r);}catch(Exception e){runOnUiThread(()->status.setText("Erro no player: "+e.getMessage()));}},ContextCompat.getMainExecutor(this));}
-    private String get(String s)throws Exception{HttpURLConnection c=(HttpURLConnection)new URL(s).openConnection();c.setConnectTimeout(10000);c.setReadTimeout(20000);c.setRequestProperty("Accept","application/json");int code=c.getResponseCode();InputStream in=code>=400?c.getErrorStream():c.getInputStream();try(BufferedReader br=new BufferedReader(new InputStreamReader(in))){StringBuilder b=new StringBuilder(),l;while((l=br.readLine())!=null)b.append(l);if(code>=400)throw new IOException("HTTP "+code);return b.toString();}finally{c.disconnect();}}
+    private String get(String s)throws Exception{HttpURLConnection c=(HttpURLConnection)new URL(s).openConnection();c.setConnectTimeout(10000);c.setReadTimeout(20000);c.setRequestProperty("Accept","application/json");int code=c.getResponseCode();InputStream in=code>=400?c.getErrorStream():c.getInputStream();try(BufferedReader br=new BufferedReader(new InputStreamReader(in))){StringBuilder b=new StringBuilder();String l;while((l=br.readLine())!=null)b.append(l);if(code>=400)throw new IOException("HTTP "+code);return b.toString();}finally{c.disconnect();}}
     @Override protected void onDestroy(){io.shutdownNow();if(future!=null)MediaController.releaseFuture(future);super.onDestroy();}
 }
