@@ -1,1 +1,0 @@
-Android native application source placeholder.
