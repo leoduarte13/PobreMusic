@@ -55,7 +55,7 @@ import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
     private static final String TAG = "ProbeMusic";
-    private static final String APP_URL = "https://appassets.androidplatform.net/assets/www/index.html";
+    private static final String APP_URL = "https://appassets.androidplatform.net/index.html";
     private static final String CHANNEL_ID = "probe_music_notification_channel";
     private static final int NOTIFICATION_ID = 1001;
 
@@ -118,6 +118,7 @@ public class MainActivity extends Activity {
         assetLoader = new WebViewAssetLoader.Builder()
                 .setDomain("appassets.androidplatform.net")
                 .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
+                .addPathHandler("/", new WebViewAssetLoader.AssetsPathHandler(this))
                 .build();
 
         FrameLayout root = new FrameLayout(this);
@@ -152,36 +153,79 @@ public class MainActivity extends Activity {
         settings.setUserAgentString("Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36 ProbeMusic/2.0");
 
         webView.addJavascriptInterface(new AndroidBridge(), "AndroidBridge");
-        webView.setWebChromeClient(new WebChromeClient());
+        webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onConsoleMessage(android.webkit.ConsoleMessage consoleMessage) {
+                Log.d("ProbeMusicJS", consoleMessage.message() + " -- Line " + consoleMessage.lineNumber() + " of " + consoleMessage.sourceId());
+                return true;
+            }
+        });
 
         webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
+                Log.e(TAG, "WebView load error: " + description + " URL: " + failingUrl);
+            }
+
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
                 Uri uri = request.getUrl();
                 String path = uri.getPath();
+                if (path == null) path = "/";
 
                 // 1. Intercept API calls and process natively on Android
-                if (path != null && path.startsWith("/api/search")) {
+                if (path.startsWith("/api/search")) {
                     String song = uri.getQueryParameter("nome_musica");
                     String artist = uri.getQueryParameter("nome_artista");
                     String json = handleNativeSearch(song, artist);
                     return createJsonResponse(json);
                 }
 
-                if (path != null && path.startsWith("/api/public-playlist")) {
+                if (path.startsWith("/api/public-playlist")) {
                     String spotifyUrl = uri.getQueryParameter("url");
                     String json = handleNativeSpotifyPlaylist(spotifyUrl);
                     return createJsonResponse(json);
                 }
 
-                if (path != null && path.startsWith("/api/health")) {
+                if (path.startsWith("/api/health")) {
                     return createJsonResponse("{\"status\":\"ok\",\"platform\":\"android\"}");
                 }
 
-                // 2. Serve bundled web assets (HTML, JS, CSS, fonts, icons)
+                // 2. Try WebViewAssetLoader
                 WebResourceResponse assetResponse = assetLoader.shouldInterceptRequest(uri);
                 if (assetResponse != null) {
                     return assetResponse;
+                }
+
+                // 3. Fallback: Direct APK asset streaming for all asset structures
+                try {
+                    String clean = path.startsWith("/") ? path.substring(1) : path;
+                    if (clean.isEmpty() || clean.equals("index.html")) clean = "index.html";
+
+                    String[] lookupPaths = new String[]{
+                            clean,
+                            clean.replace("assets/", ""),
+                            "assets/" + clean,
+                            "www/" + clean,
+                            clean.replace("www/", "")
+                    };
+
+                    for (String candidate : lookupPaths) {
+                        try {
+                            InputStream is = getAssets().open(candidate);
+                            String mime = getMimeType(candidate);
+                            WebResourceResponse res = new WebResourceResponse(mime, "UTF-8", is);
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                                java.util.Map<String, String> headers = new java.util.HashMap<>();
+                                headers.put("Access-Control-Allow-Origin", "*");
+                                headers.put("Cache-Control", "no-cache");
+                                res.setResponseHeaders(headers);
+                            }
+                            return res;
+                        } catch (Exception ignored) {}
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "Asset fallback error: " + e.getMessage());
                 }
 
                 return super.shouldInterceptRequest(view, request);
@@ -190,6 +234,18 @@ public class MainActivity extends Activity {
 
         // Load the local HTTPS URL
         webView.loadUrl(APP_URL);
+    }
+
+    private String getMimeType(String path) {
+        if (path.endsWith(".html")) return "text/html";
+        if (path.endsWith(".js") || path.endsWith(".mjs")) return "application/javascript";
+        if (path.endsWith(".css")) return "text/css";
+        if (path.endsWith(".png")) return "image/png";
+        if (path.endsWith(".jpg") || path.endsWith(".jpeg")) return "image/jpeg";
+        if (path.endsWith(".svg")) return "image/svg+xml";
+        if (path.endsWith(".json")) return "application/json";
+        if (path.endsWith(".wasm")) return "application/wasm";
+        return "application/octet-stream";
     }
 
     private WebResourceResponse createJsonResponse(String json) {
