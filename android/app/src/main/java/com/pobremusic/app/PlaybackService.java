@@ -37,7 +37,7 @@ public class PlaybackService extends MediaSessionService {
         player.setRepeatMode(Player.REPEAT_MODE_OFF);
         player.setShuffleModeEnabled(false);
 
-        Intent sessionIntent = new Intent(this, MainActivity.class);
+        Intent sessionIntent = new Intent(this, FixedMainActivity.class);
         PendingIntent sessionActivityPendingIntent = PendingIntent.getActivity(
                 this,
                 0,

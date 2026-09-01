@@ -1,9 +1,13 @@
 package com.pobremusic.app;
 
+import android.Manifest;
 import android.app.Activity;
+import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -26,6 +30,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -60,11 +65,34 @@ public class FixedMainActivity extends Activity {
     private GradientDrawable bg(int color,int r){ GradientDrawable g=new GradientDrawable(); g.setColor(color); g.setCornerRadius(dp(r)); return g; }
     private LinearLayout.LayoutParams lp(int w,int h){ return new LinearLayout.LayoutParams(w<0?w:dp(w),h<0?h:dp(h)); }
 
-    @Override public void onCreate(Bundle b){ super.onCreate(b); getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON); PowerManager pm=(PowerManager)getSystemService(POWER_SERVICE); if(pm!=null) wakeLock=pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"PobreMusic:Playback"); buildUi(); initWebPlayer(); }
+    @Override public void onCreate(Bundle b){ 
+        super.onCreate(b); 
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON); 
+        PowerManager pm=(PowerManager)getSystemService(POWER_SERVICE); 
+        if(pm!=null) wakeLock=pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"ProbeMusic:Playback"); 
+        if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if(checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 101);
+            }
+        }
+        buildUi(); 
+        initWebPlayer(); 
+    }
+
+    private void startPlaybackService() {
+        try {
+            Intent serviceIntent = new Intent(this, PlaybackService.class);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent);
+            } else {
+                startService(serviceIntent);
+            }
+        } catch (Exception ignored) {}
+    }
 
     private void buildUi(){
         LinearLayout root=new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(dp(14),dp(14),dp(14),dp(8)); root.setBackgroundColor(Color.rgb(18,18,18));
-        TextView title=text("♫  PobreMusic",21,Color.WHITE); title.setTypeface(Typeface.DEFAULT,Typeface.BOLD); root.addView(title,lp(-1,42));
+        TextView title=text("♫  Probe Music",21,Color.WHITE); title.setTypeface(Typeface.DEFAULT,Typeface.BOLD); root.addView(title,lp(-1,42));
         TextView sub=text("Importe uma playlist pública do Spotify",12,Color.LTGRAY); root.addView(sub,lp(-1,26));
         input=new EditText(this); input.setSingleLine(true); input.setTextColor(Color.WHITE); input.setHintTextColor(Color.GRAY); input.setHint("Link da playlist do Spotify"); input.setBackground(bg(Color.rgb(38,38,38),10)); input.setPadding(dp(12),0,dp(12),0); root.addView(input,lp(-1,46));
         Button imp=new Button(this); imp.setText("Importar playlist"); imp.setAllCaps(false); imp.setTextColor(Color.WHITE); imp.setBackground(bg(Color.rgb(29,185,84),10)); imp.setOnClickListener(v->importPlaylist()); LinearLayout.LayoutParams ilp=lp(-1,44); ilp.topMargin=dp(8); root.addView(imp,ilp);
@@ -83,7 +111,7 @@ public class FixedMainActivity extends Activity {
         web.setWebViewClient(new WebViewClient()); web.setWebChromeClient(new WebChromeClient());
         web.addJavascriptInterface(new Object(){
             @JavascriptInterface public void ready(){ main.post(()->{ready=true;if(pending!=null){String id=pending;pending=null;playId(id);}}); }
-            @JavascriptInterface public void state(int st){ main.post(()->{ if(st==1){playing=true;playPause.setText("⏸");status.setText("▶ Reproduzindo");if(wakeLock!=null&&!wakeLock.isHeld())try{wakeLock.acquire(12*60*60*1000L);}catch(Exception ignored){}} else if(st==2){playing=false;playPause.setText("▶");status.setText("⏸ Pausado");} else if(st==3)status.setText("⏳ Carregando..."); else if(st==0)next(); }); }
+            @JavascriptInterface public void state(int st){ main.post(()->{ if(st==1){playing=true;playPause.setText("⏸");status.setText("▶ Reproduzindo (Segundo plano ativo)");startPlaybackService();if(wakeLock!=null&&!wakeLock.isHeld())try{wakeLock.acquire(12*60*60*1000L);}catch(Exception ignored){}} else if(st==2){playing=false;playPause.setText("▶");status.setText("⏸ Pausado");} else if(st==3)status.setText("⏳ Carregando..."); else if(st==0)next(); }); }
             @JavascriptInterface public void error(int code){ main.post(()->{playing=false;playPause.setText("▶");status.setText("Faixa indisponível, tentando próxima...");next();}); }
         },"PobreBridge");
         String html="<!doctype html><html><body style='margin:0;background:#000'><div id='p'></div><script>var p;var t=document.createElement('script');t.src='https://www.youtube.com/iframe_api';document.head.appendChild(t);function onYouTubeIframeAPIReady(){p=new YT.Player('p',{height:'1',width:'1',playerVars:{autoplay:0,controls:0,playsinline:1,rel:0},events:{onReady:function(){PobreBridge.ready()},onStateChange:function(e){PobreBridge.state(e.data)},onError:function(e){PobreBridge.error(e.data)}}})}function play(id){if(p){p.loadVideoById(id);p.playVideo()}}function pause(){if(p)p.pauseVideo()}function resume(){if(p)p.playVideo()}</script></body></html>";
@@ -104,7 +132,7 @@ public class FixedMainActivity extends Activity {
         return out;
     }
     private JSONArray findTrackArray(Object node){
-        if(node instanceof JSONObject){JSONObject o=(JSONObject)node; JSONArray a=o.optJSONArray("trackList"); if(a!=null&&a.length()>0)return a; JSONObject tr=o.optJSONObject("tracks"); if(tr!=null){a=tr.optJSONArray("items");if(a!=null&&a.length()>0)return a;} for(String k:o.keySet()){Object v=o.opt(k);JSONArray r=findTrackArray(v);if(r!=null)return r;}}
+        if(node instanceof JSONObject){JSONObject o=(JSONObject)node; JSONArray a=o.optJSONArray("trackList"); if(a!=null&&a.length()>0)return a; JSONObject tr=o.optJSONObject("tracks"); if(tr!=null){a=tr.optJSONArray("items");if(a!=null&&a.length()>0)return a;} Iterator<String> it=o.keys(); while(it.hasNext()){String k=it.next();Object v=o.opt(k);JSONArray r=findTrackArray(v);if(r!=null)return r;}}
         else if(node instanceof JSONArray){JSONArray a=(JSONArray)node;for(int i=0;i<a.length();i++){JSONArray r=findTrackArray(a.opt(i));if(r!=null)return r;}}
         return null;
     }
