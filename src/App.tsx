@@ -18,6 +18,13 @@ const formatTime = (seconds: number) => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 };
 
+const getApiBase = () => {
+  if (typeof window !== 'undefined' && window.location.protocol === 'file:') {
+    return 'https://ais-pre-scpvhniuyqfisqru6bsquo-19904035643.us-west1.run.app';
+  }
+  return '';
+};
+
 const parseSpotifyId = (input: string) => {
   const value = input.trim();
   const m = value.match(/spotify\.com\/(?:intl-[^/]+\/)?(playlist|album|track)\/([A-Za-z0-9]+)/i) || value.match(/spotify:(playlist|album|track):([A-Za-z0-9]+)/i);
@@ -82,17 +89,26 @@ export default function App() {
   // Toast notification helper
   const showToast = (msg: string) => {
     setNotification(msg);
+    if (typeof window !== 'undefined' && (window as any).AndroidBridge?.showToast) {
+      try { (window as any).AndroidBridge.showToast(msg); } catch {}
+    }
     setTimeout(() => setNotification(''), 3500);
   };
 
   // MediaSession Lockscreen integration
   const setMetadata = useCallback((track: Track | null) => {
-    if (!track || !('mediaSession' in navigator)) return;
+    if (!track) return;
+    if (typeof window !== 'undefined' && (window as any).AndroidBridge?.updateTrackInfo) {
+      try {
+        (window as any).AndroidBridge.updateTrackInfo(track.nome_musica, track.nome_artista, track.capa || '');
+      } catch {}
+    }
+    if (!('mediaSession' in navigator)) return;
     try {
       navigator.mediaSession.metadata = new MediaMetadata({
         title: track.nome_musica,
         artist: track.nome_artista,
-        album: track.album || playlist?.nome_playlist || 'Myt Music',
+        album: track.album || playlist?.nome_playlist || 'Probe Music',
         artwork: track.capa ? [
           { src: track.capa, sizes: '300x300', type: 'image/jpeg' },
           { src: track.capa, sizes: '512x512', type: 'image/jpeg' }
@@ -380,7 +396,7 @@ export default function App() {
     if (spotifyId) {
       // Import Spotify Playlist
       try {
-        const response = await fetch(`/api/public-playlist?url=${encodeURIComponent(val)}`, { cache: 'no-store' });
+        const response = await fetch(`${getApiBase()}/api/public-playlist?url=${encodeURIComponent(val)}`, { cache: 'no-store' });
         const data: PlaylistData = await response.json();
         if (!response.ok || !data.sucesso) throw new Error(data.error || 'Não foi possível carregar a playlist.');
         setPlaylist(data);
@@ -392,7 +408,7 @@ export default function App() {
           const batch = resolved.slice(i, i + 4);
           await Promise.all(batch.map(async (track, j) => {
             try {
-              const r = await fetch(`/api/search?nome_musica=${encodeURIComponent(track.nome_musica)}&nome_artista=${encodeURIComponent(track.nome_artista)}`, { cache: 'no-store' });
+              const r = await fetch(`${getApiBase()}/api/search?nome_musica=${encodeURIComponent(track.nome_musica)}&nome_artista=${encodeURIComponent(track.nome_artista)}`, { cache: 'no-store' });
               const result = await r.json();
               resolved[i + j] = r.ok && result.videoId
                 ? { ...track, videoId: result.videoId, videoTitle: result.titulo, hasError: false }
@@ -419,7 +435,7 @@ export default function App() {
     } else {
       // Single Track Search
       try {
-        const r = await fetch(`/api/search?nome_musica=${encodeURIComponent(val)}`, { cache: 'no-store' });
+        const r = await fetch(`${getApiBase()}/api/search?nome_musica=${encodeURIComponent(val)}`, { cache: 'no-store' });
         const result = await r.json();
         if (!r.ok || !result.videoId) throw new Error(result.error || 'Música não encontrada.');
 

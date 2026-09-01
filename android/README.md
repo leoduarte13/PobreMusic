@@ -9,8 +9,8 @@ Aplicativo Android nativo para reprodução de playlists do Spotify e buscas de 
 2. Abra o **Android Studio** e clique em **Open** selecionando a pasta `android`.
 3. Aguarde o Gradle sincronizar as dependências.
 4. No menu superior, vá em **Build > Build Bundle(s) / APK(s) > Build APK(s)**.
-5. O Android Studio gerará o APK em:
-   `app/build/outputs/apk/debug/app-debug.apk`
+5. O Android Studio gerará o APK **ProbeMusic** em:
+   `app/build/outputs/apk/debug/ProbeMusic-debug.apk` (ou `app-debug.apk`)
 6. Transfira para o seu celular Android e instale.
 
 ### Método 2: Linha de Comando (Terminal)
@@ -19,7 +19,7 @@ Com o Android SDK e Java instalados:
 cd android
 ./gradlew assembleDebug
 ```
-O arquivo APK estará pronto na pasta `app/build/outputs/apk/debug/app-debug.apk`.
+O arquivo APK estará pronto na pasta `app/build/outputs/apk/debug/`.
 
 ---
 
