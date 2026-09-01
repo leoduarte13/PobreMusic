@@ -1,6 +1,0 @@
-{
-  "name": "Probe Music",
-  "description": "Probe Music - Reprodutor de músicas e playlists do Spotify com reprodução contínua em segundo plano, tela bloqueada e download para ouvir offline.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
