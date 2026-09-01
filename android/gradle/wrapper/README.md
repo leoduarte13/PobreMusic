@@ -1,1 +1,0 @@
-Android build uses the Gradle executable available in CI.
