@@ -9,7 +9,9 @@ export interface Track {
   videoId?: string;
   videoTitle?: string;
   audioUrl?: string;
-  source?: 'piped';
+  audioBlobUrl?: string;
+  isOffline?: boolean;
+  isDownloading?: boolean;
   hasError?: boolean;
 }
 
@@ -26,3 +28,4 @@ export interface PlaylistData {
 }
 
 export type PlaybackStatus = 'unstarted' | 'ended' | 'playing' | 'paused' | 'buffering' | 'cued' | 'error';
+export type AppTab = 'search' | 'queue' | 'downloads';

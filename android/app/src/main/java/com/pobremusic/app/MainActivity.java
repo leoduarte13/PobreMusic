@@ -1,10 +1,14 @@
 package com.pobremusic.app;
 
+import android.Manifest;
 import android.app.Activity;
 import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -97,7 +101,14 @@ public class MainActivity extends Activity {
 
         PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
         if (powerManager != null) {
-            wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "PobreMusic:PlaybackWakeLock");
+            wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ProbeMusic:PlaybackWakeLock");
+        }
+
+        // Request notification permission for Android 13+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 101);
+            }
         }
 
         buildUi();
@@ -139,10 +150,10 @@ public class MainActivity extends Activity {
         LinearLayout titles = new LinearLayout(this);
         titles.setOrientation(LinearLayout.VERTICAL);
         titles.setPadding(dp(12), 0, 0, 0);
-        TextView appTitle = createText("PobreMusic", 20, Color.WHITE);
+        TextView appTitle = createText("Probe Music", 20, Color.WHITE);
         appTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         titles.addView(appTitle, createLp(-1, -2));
-        TextView appSubtitle = createText("Reprodutor de Playlists do Spotify", 12, Color.rgb(179, 179, 179));
+        TextView appSubtitle = createText("Reprodutor com Reprodução em Segundo Plano", 12, Color.rgb(179, 179, 179));
         titles.addView(appSubtitle, createLp(-1, -2));
         header.addView(titles, new LinearLayout.LayoutParams(0, -2, 1));
         root.addView(header, createLp(-1, -2));
@@ -157,7 +168,7 @@ public class MainActivity extends Activity {
         inputCard.setBackground(createBackground(Color.rgb(28, 28, 28), 12));
         inputCard.setPadding(dp(12), dp(12), dp(12), dp(12));
 
-        TextView sectionLabel = createText("COLE AQUI A PLAYLIST", 11, Color.rgb(29, 185, 84));
+        TextView sectionLabel = createText("COLE AQUI A PLAYLIST OU MÚSICA", 11, Color.rgb(29, 185, 84));
         sectionLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         inputCard.addView(sectionLabel, createLp(-1, -2));
 
@@ -245,7 +256,7 @@ public class MainActivity extends Activity {
 
         root.addView(playerBar, createLp(-1, -2));
 
-        // Hidden Audio Engine WebView (1x1 px)
+        // Background Audio Engine WebView
         audioPlayerWebView = new WebView(this);
         audioPlayerWebView.setVisibility(View.GONE);
         root.addView(audioPlayerWebView, new LinearLayout.LayoutParams(1, 1));
@@ -268,6 +279,8 @@ public class MainActivity extends Activity {
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setMediaPlaybackRequiresUserGesture(false);
+        settings.setAllowFileAccess(true);
+        settings.setAllowContentAccess(true);
         settings.setUserAgentString("Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36");
 
         audioPlayerWebView.setWebViewClient(new WebViewClient());
@@ -291,8 +304,9 @@ public class MainActivity extends Activity {
                 mainHandler.post(() -> {
                     isPlaying = true;
                     acquireWakeLock();
-                    statusText.setText("▶ Reproduzindo");
+                    statusText.setText("▶ Reproduzindo (Segundo plano ativo)");
                     playPauseBtn.setText("⏸");
+                    startPlaybackService();
                 });
             }
 
@@ -328,6 +342,17 @@ public class MainActivity extends Activity {
         String html = "<!DOCTYPE html><html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"><style>body{margin:0;background:#000;}</style></head><body><div id=\"player\"></div><script>var tag=document.createElement('script');tag.src='https://www.youtube.com/iframe_api';var first=document.getElementsByTagName('script')[0];first.parentNode.insertBefore(tag,first);var player=null;function onYouTubeIframeAPIReady(){player=new YT.Player('player',{height:'100%',width:'100%',videoId:'dQw4w9WgXcQ',playerVars:{autoplay:0,controls:0,playsinline:1,rel:0,disablekb:1},events:{onReady:function(){if(window.PobreBridge)PobreBridge.onReady();},onStateChange:function(e){if(!window.PobreBridge)return;if(e.data===1)PobreBridge.onPlaying();else if(e.data===2)PobreBridge.onPaused();else if(e.data===3)PobreBridge.onBuffering();else if(e.data===0)PobreBridge.onEnded();},onError:function(e){if(window.PobreBridge)PobreBridge.onError(e.data);}}});}function playVideo(id){if(player&&player.loadVideoById){player.loadVideoById(id);player.playVideo();}}function pauseVideo(){if(player&&player.pauseVideo){player.pauseVideo();}}function resumeVideo(){if(player&&player.playVideo){player.playVideo();}}</script></body></html>";
 
         audioPlayerWebView.loadDataWithBaseURL("https://www.youtube.com", html, "text/html", "UTF-8", null);
+    }
+
+    private void startPlaybackService() {
+        try {
+            Intent serviceIntent = new Intent(this, PlaybackService.class);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent);
+            } else {
+                startService(serviceIntent);
+            }
+        } catch (Exception ignored) {}
     }
 
     private void loadAndPlayVideoId(String videoId) {
