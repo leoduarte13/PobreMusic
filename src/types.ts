@@ -28,4 +28,24 @@ export interface PlaylistData {
 }
 
 export type PlaybackStatus = 'unstarted' | 'ended' | 'playing' | 'paused' | 'buffering' | 'cued' | 'error';
-export type AppTab = 'search' | 'queue' | 'downloads';
+export type AppTab = 'search' | 'queue' | 'cloud' | 'downloads';
+
+export interface CloudTrackItem {
+  id: string;
+  nome_musica: string;
+  nome_artista: string;
+  album?: string;
+  capa?: string;
+  videoId: string;
+  duracao?: number;
+  createdAt: string;
+}
+
+export interface CloudPlaylistItem {
+  id: string;
+  nome_playlist: string;
+  capa_playlist?: string;
+  total_faixas: number;
+  faixas: Track[];
+  createdAt: string;
+}

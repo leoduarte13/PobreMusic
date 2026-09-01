@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { PlaylistData, Track, PlaybackStatus, AppTab } from './types';
+import type { PlaylistData, Track, PlaybackStatus, AppTab, CloudTrackItem, CloudPlaylistItem } from './types';
 import { loadYouTubeAPI } from './lib/youtubePlayer';
 import {
   saveTrackOffline,
@@ -7,6 +7,15 @@ import {
   removeTrackOffline,
   type DownloadedTrack
 } from './lib/offlineStorage';
+import {
+  saveTrackToCloud,
+  getCloudTracks,
+  removeTrackFromCloud,
+  savePlaylistToCloud,
+  getCloudPlaylists,
+  removePlaylistFromCloud
+} from './lib/cloudStorage';
+import { testFirebaseConnection } from './firebase';
 import { startBackgroundAudioKeeper, pauseBackgroundAudioKeeper, requestScreenWakeLock } from './lib/backgroundKeeper';
 import './index.css';
 
@@ -19,9 +28,6 @@ const formatTime = (seconds: number) => {
 };
 
 const getApiBase = () => {
-  if (typeof window !== 'undefined' && window.location.protocol === 'file:') {
-    return 'https://ais-pre-scpvhniuyqfisqru6bsquo-19904035643.us-west1.run.app';
-  }
   return '';
 };
 
@@ -44,6 +50,9 @@ export default function App() {
   const [playlist, setPlaylist] = useState<PlaylistData | null>(null);
   const [tracks, setTracks] = useState<Track[]>([]);
   const [downloadedTracks, setDownloadedTracks] = useState<DownloadedTrack[]>([]);
+  const [cloudTracks, setCloudTracks] = useState<CloudTrackItem[]>([]);
+  const [cloudPlaylists, setCloudPlaylists] = useState<CloudPlaylistItem[]>([]);
+  const [loadingCloud, setLoadingCloud] = useState(false);
   const [index, setIndex] = useState<number | null>(null);
 
   // Playback State
@@ -74,7 +83,7 @@ export default function App() {
   useEffect(() => { shuffleRef.current = shuffle; }, [shuffle]);
   useEffect(() => { repeatRef.current = repeat; }, [repeat]);
 
-  // Load offline downloaded tracks on startup
+  // Load offline downloaded tracks
   const refreshDownloaded = useCallback(async () => {
     try {
       const list = await getDownloadedTracks();
@@ -82,9 +91,28 @@ export default function App() {
     } catch {}
   }, []);
 
+  // Load Cloud saved tracks & playlists from Firebase Firestore
+  const refreshCloud = useCallback(async () => {
+    setLoadingCloud(true);
+    try {
+      const [tList, pList] = await Promise.all([
+        getCloudTracks(),
+        getCloudPlaylists()
+      ]);
+      setCloudTracks(tList);
+      setCloudPlaylists(pList);
+    } catch (e) {
+      console.warn('Erro ao carregar dados da nuvem:', e);
+    } finally {
+      setLoadingCloud(false);
+    }
+  }, []);
+
   useEffect(() => {
     refreshDownloaded();
-  }, [refreshDownloaded]);
+    refreshCloud();
+    testFirebaseConnection();
+  }, [refreshDownloaded, refreshCloud]);
 
   // Toast notification helper
   const showToast = (msg: string) => {
@@ -460,6 +488,72 @@ export default function App() {
     }
   };
 
+  // Save Track to Cloud (Firebase - 0 MB local storage)
+  const handleSaveTrackToCloud = async (track: Track) => {
+    if (!track.videoId && !track.nome_musica) return;
+    try {
+      showToast(`☁ Salvando "${track.nome_musica}" na Nuvem (0 MB)...`);
+      await saveTrackToCloud(track);
+      await refreshCloud();
+      showToast(`✔ "${track.nome_musica}" salva na Nuvem (0 MB no celular)!`);
+    } catch (e: any) {
+      showToast(e?.message || 'Erro ao salvar na nuvem.');
+    }
+  };
+
+  // Save Playlist to Cloud (Firebase - 0 MB local storage)
+  const handleSavePlaylistToCloud = async () => {
+    if (!playlist || !tracks.length) return;
+    try {
+      showToast(`☁ Salvando playlist "${playlist.nome_playlist}" na Nuvem...`);
+      const plData: PlaylistData = {
+        ...playlist,
+        faixas: tracks
+      };
+      await savePlaylistToCloud(plData);
+      await refreshCloud();
+      showToast(`✔ Playlist "${playlist.nome_playlist}" salva na Nuvem com sucesso!`);
+    } catch (e: any) {
+      showToast(e?.message || 'Erro ao salvar playlist na nuvem.');
+    }
+  };
+
+  // Play Cloud Track
+  const playCloudTrack = (item: CloudTrackItem) => {
+    const tr: Track = {
+      nome_musica: item.nome_musica,
+      nome_artista: item.nome_artista,
+      album: item.album,
+      capa: item.capa,
+      videoId: item.videoId,
+      duracao_ms: (item.duracao || 210) * 1000
+    };
+    setTracks([tr, ...tracks.filter(t => t.videoId !== tr.videoId)]);
+    playIndex(0);
+    showToast(`▶ Tocando "${item.nome_musica}" da Nuvem`);
+  };
+
+  // Play Cloud Playlist
+  const playCloudPlaylist = (pl: CloudPlaylistItem) => {
+    if (!pl.faixas || !pl.faixas.length) {
+      showToast('Playlist vazia');
+      return;
+    }
+    setPlaylist({
+      sucesso: true,
+      playlist_id: pl.id,
+      nome_playlist: pl.nome_playlist,
+      capa_playlist: pl.capa_playlist,
+      total_faixas: pl.total_faixas,
+      faixas: pl.faixas
+    });
+    setTracks(pl.faixas);
+    setActiveTab('queue');
+    const first = pl.faixas.findIndex(t => !!t.videoId);
+    if (first >= 0) playIndex(first);
+    showToast(`▶ Carregando playlist "${pl.nome_playlist}" da Nuvem`);
+  };
+
   // Download Track ("Ouça e Baixe")
   const downloadTrack = async (track: Track) => {
     if (!track.videoId && !track.nome_musica) return;
@@ -555,6 +649,12 @@ export default function App() {
               🎵 Fila ({tracks.length})
             </button>
             <button
+              className={`tab-btn ${activeTab === 'cloud' ? 'active' : ''}`}
+              onClick={() => { setActiveTab('cloud'); refreshCloud(); }}
+            >
+              ☁ Nuvem ({cloudTracks.length + cloudPlaylists.length})
+            </button>
+            <button
               className={`tab-btn ${activeTab === 'downloads' ? 'active' : ''}`}
               onClick={() => setActiveTab('downloads')}
             >
@@ -572,7 +672,7 @@ export default function App() {
             <div className="search-card">
               <h1 className="search-title">Ouça Qualquer Música ou Playlist</h1>
               <p className="search-sub">
-                Pesquise por artista, música ou cole o link da playlist do Spotify para importar.
+                Pesquise por artista, música ou cole o link da playlist do Spotify para importar e salvar na Nuvem (0 MB no celular).
               </p>
 
               <div className="search-input-group">
@@ -646,15 +746,34 @@ export default function App() {
                 <div className="playlist-info">
                   <h2>{playlist.nome_playlist}</h2>
                   <p>{playlist.total_faixas} músicas importadas do Spotify</p>
-                  <button
-                    className="btn-primary"
-                    onClick={() => {
-                      const first = tracks.findIndex(t => !!t.videoId);
-                      if (first >= 0) playIndex(first);
-                    }}
-                  >
-                    ▶ Tocar Playlist
-                  </button>
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 10 }}>
+                    <button
+                      className="btn-primary"
+                      onClick={() => {
+                        const first = tracks.findIndex(t => !!t.videoId);
+                        if (first >= 0) playIndex(first);
+                      }}
+                    >
+                      ▶ Tocar Playlist
+                    </button>
+                    <button
+                      style={{
+                        background: 'rgba(0, 240, 255, 0.15)',
+                        border: '1px solid #00f0ff',
+                        color: '#00f0ff',
+                        padding: '10px 18px',
+                        borderRadius: 12,
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6
+                      }}
+                      onClick={handleSavePlaylistToCloud}
+                    >
+                      ☁ Salvar na Nuvem (0 MB)
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
@@ -704,6 +823,14 @@ export default function App() {
                   </div>
                   <button
                     className="action-btn"
+                    title="Salvar na Nuvem (0 MB no celular)"
+                    style={{ color: '#00f0ff' }}
+                    onClick={() => handleSaveTrackToCloud(track)}
+                  >
+                    ☁
+                  </button>
+                  <button
+                    className="action-btn"
                     title="Baixar para ouvir offline"
                     onClick={() => downloadTrack(track)}
                   >
@@ -722,7 +849,177 @@ export default function App() {
           </div>
         )}
 
-        {/* Tab 3: Downloaded Tracks ("Ouça e Baixe") */}
+        {/* Tab 3: Cloud Library ("Nuvem - 0 MB no celular") */}
+        {activeTab === 'cloud' && (
+          <div>
+            <div style={{
+              background: 'linear-gradient(135deg, rgba(123, 44, 191, 0.25), rgba(0, 240, 255, 0.15))',
+              border: '1px solid rgba(0, 240, 255, 0.3)',
+              borderRadius: 16,
+              padding: '16px 20px',
+              marginBottom: 20
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ fontSize: 24 }}>☁</span>
+                  <div>
+                    <h2 style={{ fontSize: 17, fontWeight: 800, color: '#fff', margin: 0 }}>
+                      Sua Biblioteca na Nuvem (Firebase)
+                    </h2>
+                    <p style={{ fontSize: 12, color: '#00f0ff', margin: '2px 0 0' }}>
+                      ⚡ 0 MB ocupados no celular • Acessível de qualquer dispositivo
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={refreshCloud}
+                  style={{
+                    background: 'rgba(255,255,255,0.1)',
+                    border: 'none',
+                    color: '#fff',
+                    borderRadius: 8,
+                    padding: '6px 12px',
+                    fontSize: 12,
+                    cursor: 'pointer'
+                  }}
+                >
+                  {loadingCloud ? 'Atualizando…' : '🔄 Atualizar'}
+                </button>
+              </div>
+            </div>
+
+            {/* Cloud Playlists Section */}
+            {cloudPlaylists.length > 0 && (
+              <div style={{ marginBottom: 26 }}>
+                <h3 style={{ fontSize: 15, fontWeight: 700, color: '#e0aaff', marginBottom: 12 }}>
+                  Playlists Salvas na Nuvem ({cloudPlaylists.length})
+                </h3>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 12 }}>
+                  {cloudPlaylists.map(pl => (
+                    <div
+                      key={pl.id}
+                      style={{
+                        background: 'rgba(28, 18, 54, 0.7)',
+                        border: '1px solid rgba(157, 78, 221, 0.25)',
+                        borderRadius: 14,
+                        padding: 12,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 12
+                      }}
+                    >
+                      <img
+                        src={pl.capa_playlist || placeholder}
+                        alt=""
+                        style={{ width: 56, height: 56, borderRadius: 10, objectFit: 'cover' }}
+                      />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <b style={{ display: 'block', fontSize: 13, color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {pl.nome_playlist}
+                        </b>
+                        <small style={{ color: '#9d8db8', fontSize: 11 }}>{pl.total_faixas} músicas • ☁ Nuvem</small>
+                        <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                          <button
+                            onClick={() => playCloudPlaylist(pl)}
+                            style={{
+                              background: '#7b2cbf',
+                              border: 'none',
+                              color: '#fff',
+                              borderRadius: 6,
+                              padding: '4px 10px',
+                              fontSize: 11,
+                              fontWeight: 700,
+                              cursor: 'pointer'
+                            }}
+                          >
+                            ▶ Tocar
+                          </button>
+                          <button
+                            onClick={async () => {
+                              await removePlaylistFromCloud(pl.id);
+                              await refreshCloud();
+                              showToast('Playlist removida da nuvem.');
+                            }}
+                            style={{
+                              background: 'transparent',
+                              border: 'none',
+                              color: '#ff4081',
+                              fontSize: 13,
+                              cursor: 'pointer'
+                            }}
+                            title="Excluir da Nuvem"
+                          >
+                            🗑
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Cloud Tracks Section */}
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <h3 style={{ fontSize: 15, fontWeight: 700, color: '#e0aaff', margin: 0 }}>
+                  Músicas Salvas na Nuvem ({cloudTracks.length})
+                </h3>
+              </div>
+
+              {cloudTracks.length === 0 && cloudPlaylists.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '50px 20px', color: '#6d5d88', background: 'rgba(22,15,43,0.4)', borderRadius: 18, border: '1px dashed rgba(0,240,255,0.2)' }}>
+                  <div style={{ fontSize: 40, marginBottom: 10 }}>☁</div>
+                  <p style={{ color: '#fff', fontWeight: 700, marginBottom: 4 }}>Sua Nuvem está vazia</p>
+                  <p style={{ fontSize: 13, maxWidth: 360, margin: '0 auto 16px' }}>
+                    Toque no botão <b>☁ (Nuvem)</b> ao lado de qualquer música ou playlist para guardá-la na nuvem com <b>0 MB</b> de armazenamento usado no celular!
+                  </p>
+                  <button
+                    className="btn-primary"
+                    onClick={() => setActiveTab('search')}
+                  >
+                    Buscar Músicas para Salvar
+                  </button>
+                </div>
+              ) : (
+                cloudTracks.map(item => (
+                  <div key={item.id} className="track-row">
+                    <span style={{ color: '#00f0ff', fontSize: 14, textAlign: 'center' }}>☁</span>
+                    <img src={item.capa || placeholder} alt="" />
+                    <div
+                      className="track-info-col"
+                      style={{ cursor: 'pointer' }}
+                      onClick={() => playCloudTrack(item)}
+                    >
+                      <b>{item.nome_musica}</b>
+                      <small>{item.nome_artista} • Salva na Nuvem (0 MB)</small>
+                    </div>
+                    <button
+                      className="action-btn"
+                      title="Excluir da Nuvem"
+                      onClick={async () => {
+                        await removeTrackFromCloud(item.id);
+                        await refreshCloud();
+                        showToast('Música removida da nuvem.');
+                      }}
+                    >
+                      🗑
+                    </button>
+                    <button
+                      className="action-btn"
+                      style={{ color: '#00f0ff' }}
+                      onClick={() => playCloudTrack(item)}
+                    >
+                      ▶
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Tab 4: Downloaded Tracks ("Ouça e Baixe") */}
         {activeTab === 'downloads' && (
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
@@ -784,7 +1081,7 @@ export default function App() {
             <img src={current?.capa || placeholder} alt="" />
             <div style={{ minWidth: 0 }}>
               <b style={{ display: 'block', fontSize: 13, color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {current?.nome_musica || 'Myt Music'}
+                {current?.nome_musica || 'Probe Music'}
               </b>
               <small style={{ display: 'block', fontSize: 11, color: '#9d8db8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                 {current?.nome_artista || 'Toque para abrir o player'}
@@ -829,13 +1126,22 @@ export default function App() {
               🔁{repeat === 'one' && <sup style={{ fontSize: 9 }}>1</sup>}
             </button>
             {current && (
-              <button
-                style={{ color: '#00f0ff', fontSize: 16 }}
-                title="Baixar MP3"
-                onClick={() => downloadTrack(current)}
-              >
-                📥
-              </button>
+              <>
+                <button
+                  style={{ color: '#00f0ff', fontSize: 16 }}
+                  title="Salvar na Nuvem (0 MB)"
+                  onClick={() => handleSaveTrackToCloud(current)}
+                >
+                  ☁
+                </button>
+                <button
+                  style={{ color: '#c77dff', fontSize: 16 }}
+                  title="Baixar MP3"
+                  onClick={() => downloadTrack(current)}
+                >
+                  📥
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -853,14 +1159,24 @@ export default function App() {
             </button>
             <div style={{ textAlign: 'center' }}>
               <small style={{ color: '#00f0ff', fontSize: 11, fontWeight: 700 }}>TOCANDO AGORA</small>
-              <div style={{ color: '#fff', fontSize: 13, fontWeight: 600 }}>{playlist?.nome_playlist || 'Myt Music'}</div>
+              <div style={{ color: '#fff', fontSize: 13, fontWeight: 600 }}>{playlist?.nome_playlist || 'Probe Music'}</div>
             </div>
-            <button
-              style={{ fontSize: 20, color: '#c77dff' }}
-              onClick={() => current && downloadTrack(current)}
-            >
-              📥
-            </button>
+            <div style={{ display: 'flex', gap: 12 }}>
+              <button
+                style={{ fontSize: 20, color: '#00f0ff' }}
+                title="Salvar na Nuvem (0 MB)"
+                onClick={() => current && handleSaveTrackToCloud(current)}
+              >
+                ☁
+              </button>
+              <button
+                style={{ fontSize: 20, color: '#c77dff' }}
+                title="Baixar MP3"
+                onClick={() => current && downloadTrack(current)}
+              >
+                📥
+              </button>
+            </div>
           </div>
 
           <div className="modal-art-box">
@@ -873,7 +1189,7 @@ export default function App() {
               {current?.nome_musica || 'Nenhuma música'}
             </h2>
             <p style={{ fontSize: 14, color: '#9d8db8' }}>
-              {current?.nome_artista || 'Myt Music Player'}
+              {current?.nome_artista || 'Probe Music Player'}
             </p>
           </div>
 

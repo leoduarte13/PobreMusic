@@ -1,0 +1,46 @@
+{
+  "entities": {
+    "CloudTrack": {
+      "title": "CloudTrack",
+      "description": "A saved track stored in cloud library",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "nome_musica": { "type": "string" },
+        "nome_artista": { "type": "string" },
+        "album": { "type": "string" },
+        "videoId": { "type": "string" },
+        "capa": { "type": "string" },
+        "duracao": { "type": "number" },
+        "createdAt": { "type": "string" },
+        "userId": { "type": "string" }
+      },
+      "required": ["id", "nome_musica", "nome_artista", "videoId", "createdAt"]
+    },
+    "CloudPlaylist": {
+      "title": "CloudPlaylist",
+      "description": "A user-saved playlist stored in the cloud",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "nome_playlist": { "type": "string" },
+        "capa_playlist": { "type": "string" },
+        "total_faixas": { "type": "number" },
+        "faixas": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "userId": { "type": "string" }
+      },
+      "required": ["id", "nome_playlist", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/cloud_tracks/{trackId}": {
+      "schema": "CloudTrack",
+      "description": "Collection of cloud-saved music tracks"
+    },
+    "/cloud_playlists/{playlistId}": {
+      "schema": "CloudPlaylist",
+      "description": "Collection of cloud-saved playlists"
+    }
+  }
+}
