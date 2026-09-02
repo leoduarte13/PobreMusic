@@ -2,22 +2,22 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PlaylistData, Track, PlaybackStatus, AppTab, CloudTrackItem, CloudPlaylistItem } from './types';
 import { loadYouTubeAPI } from './lib/youtubePlayer';
 import {
-  saveTrackOffline,
-  getDownloadedTracks,
-  removeTrackOffline,
-  type DownloadedTrack
-} from './lib/offlineStorage';
-import {
   saveTrackToCloud,
   getCloudTracks,
   removeTrackFromCloud,
-  savePlaylistToCloud,
   getCloudPlaylists,
-  removePlaylistFromCloud
+  createCloudPlaylist,
+  addTracksToCloudPlaylist,
+  removeTrackFromCloudPlaylist,
+  removeMultipleTracksFromCloudPlaylist,
+  renameCloudPlaylist,
+  deleteCloudPlaylist,
+  savePlaylistToCloud
 } from './lib/cloudStorage';
 import { testFirebaseConnection } from './firebase';
 import { startBackgroundAudioKeeper, pauseBackgroundAudioKeeper, requestScreenWakeLock } from './lib/backgroundKeeper';
-import { parseSpotifyDetails, safeFetchJson, extractSpotifyDirectly } from './lib/spotifyResolver';
+import { safeFetchJson, extractSpotifyDirectly } from './lib/spotifyResolver';
+import { detectInputType, resolveYouTubeVideo, resolveYouTubePlaylist } from './lib/universalLinkResolver';
 import './index.css';
 
 const placeholder = 'https://placehold.co/120x120/1f1638/00f0ff?text=♫';
@@ -28,27 +28,35 @@ const formatTime = (seconds: number) => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 };
 
-const getApiBase = () => {
-  return '';
-};
+const getApiBase = () => '';
 
 export default function App() {
-  // Navigation & Tabs
-  const [activeTab, setActiveTab] = useState<AppTab>('search');
+  // Navigation & Tabs: 100% Cloud-Focused
+  const [activeTab, setActiveTab] = useState<'search' | 'queue' | 'cloud_playlists' | 'cloud_tracks'>('search');
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState('');
   const [notification, setNotification] = useState('');
 
-  // Playlist & Tracks
+  // Queue & Track Lists (Transient runtime state, 0 MB on disk)
   const [playlist, setPlaylist] = useState<PlaylistData | null>(null);
   const [tracks, setTracks] = useState<Track[]>([]);
-  const [downloadedTracks, setDownloadedTracks] = useState<DownloadedTrack[]>([]);
   const [cloudTracks, setCloudTracks] = useState<CloudTrackItem[]>([]);
   const [cloudPlaylists, setCloudPlaylists] = useState<CloudPlaylistItem[]>([]);
+  const [selectedCloudPlaylistId, setSelectedCloudPlaylistId] = useState<string | null>(null);
   const [loadingCloud, setLoadingCloud] = useState(false);
   const [index, setIndex] = useState<number | null>(null);
+
+  // Multi-Selection State
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [selectedIndices, setSelectedIndices] = useState<number[]>([]);
+
+  // Cloud Playlist Modals
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [newPlaylistName, setNewPlaylistName] = useState('');
+  const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null);
+  const [tracksToAddToPlaylist, setTracksToAddToPlaylist] = useState<Track[] | null>(null);
 
   // Playback State
   const [status, setStatus] = useState<PlaybackStatus>('unstarted');
@@ -78,15 +86,7 @@ export default function App() {
   useEffect(() => { shuffleRef.current = shuffle; }, [shuffle]);
   useEffect(() => { repeatRef.current = repeat; }, [repeat]);
 
-  // Load offline downloaded tracks
-  const refreshDownloaded = useCallback(async () => {
-    try {
-      const list = await getDownloadedTracks();
-      setDownloadedTracks(list);
-    } catch {}
-  }, []);
-
-  // Load Cloud saved tracks & playlists from Firebase Firestore
+  // Load Cloud saved tracks & playlists from Firebase Firestore (0 MB on phone)
   const refreshCloud = useCallback(async () => {
     setLoadingCloud(true);
     try {
@@ -104,10 +104,9 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    refreshDownloaded();
     refreshCloud();
     testFirebaseConnection();
-  }, [refreshDownloaded, refreshCloud]);
+  }, [refreshCloud]);
 
   // Toast notification helper
   const showToast = (msg: string) => {
@@ -152,14 +151,14 @@ export default function App() {
 
     let next = -1;
     if (shuffleRef.current) {
-      const choices = list.map((_, i) => i).filter(i => i !== current && (list[i]?.videoId || list[i]?.audioBlobUrl));
+      const choices = list.map((_, i) => i).filter(i => i !== current && (list[i]?.videoId || list[i]?.audioBlobUrl || list[i]?.audioUrl));
       next = choices.length ? choices[Math.floor(Math.random() * choices.length)] : -1;
     } else {
       let i = current === null ? 0 : current + 1;
-      while (i < list.length && !list[i]?.videoId && !list[i]?.audioBlobUrl) i++;
+      while (i < list.length && !list[i]?.videoId && !list[i]?.audioBlobUrl && !list[i]?.audioUrl) i++;
       if (i < list.length) next = i;
       else if (repeatRef.current !== 'off') {
-        next = list.findIndex(t => !!t.videoId || !!t.audioBlobUrl);
+        next = list.findIndex(t => !!t.videoId || !!t.audioBlobUrl || !!t.audioUrl);
       }
     }
     if (next >= 0) playIndex(next);
@@ -175,10 +174,10 @@ export default function App() {
       return;
     }
     let next = current - 1;
-    while (next >= 0 && !tracksRef.current[next]?.videoId && !tracksRef.current[next]?.audioBlobUrl) next--;
+    while (next >= 0 && !tracksRef.current[next]?.videoId && !tracksRef.current[next]?.audioBlobUrl && !tracksRef.current[next]?.audioUrl) next--;
     if (next < 0) {
       for (let i = tracksRef.current.length - 1; i >= 0; i--) {
-        if (tracksRef.current[i]?.videoId || tracksRef.current[i]?.audioBlobUrl) { next = i; break; }
+        if (tracksRef.current[i]?.videoId || tracksRef.current[i]?.audioBlobUrl || tracksRef.current[i]?.audioUrl) { next = i; break; }
       }
     }
     if (next >= 0) playIndex(next);
@@ -188,7 +187,7 @@ export default function App() {
   useEffect(() => {
     let mounted = true;
 
-    // Native HTML5 Audio
+    // Native HTML5 Audio (audio-only, ultra lightweight)
     const audio = new Audio();
     audio.preload = 'auto';
     nativeAudioRef.current = audio;
@@ -218,12 +217,12 @@ export default function App() {
     audio.onerror = () => {
       if (activeAudioSourceRef.current === 'native') {
         setStatus('error');
-        showToast('Erro ao tocar áudio direto. Alternando engine...');
+        showToast('Erro no áudio. Tentando próxima faixa...');
         nextTrack();
       }
     };
 
-    // Load YouTube Iframe API
+    // Load YouTube Iframe API (1x1px background audio-only engine)
     loadYouTubeAPI().then(() => {
       if (!mounted) return;
       if (window.YT && window.YT.Player && !ytPlayerRef.current) {
@@ -253,17 +252,18 @@ export default function App() {
                 setStatus('paused');
                 pauseBackgroundAudioKeeper();
                 try { navigator.mediaSession.playbackState = 'paused'; } catch {}
-              } else if (event.data === 3) {
-                setStatus('buffering');
               } else if (event.data === 0) {
                 nextTrack();
+              } else if (event.data === 3) {
+                setStatus('buffering');
               }
             },
-            onError: () => {
+            onError: (err: any) => {
+              console.warn('YouTube engine error code:', err.data);
               if (activeAudioSourceRef.current === 'yt') {
                 setStatus('error');
-                showToast('Faixa indisponível. Avançando para a próxima...');
-                setTimeout(() => nextTrack(), 1200);
+                showToast('Erro ao tocar faixa do YouTube. Indo para a próxima...');
+                nextTrack();
               }
             }
           }
@@ -271,82 +271,107 @@ export default function App() {
       }
     });
 
-    // Time ticker for YouTube Engine
+    // YouTube polling ticker
     timerRef.current = setInterval(() => {
-      if (activeAudioSourceRef.current === 'yt') {
-        const p = ytPlayerRef.current;
-        if (p && p.getCurrentTime && p.getDuration) {
-          try {
-            const cur = p.getCurrentTime() || 0;
-            const dur = p.getDuration() || 0;
-            setTime(cur);
-            if (dur > 0) setDuration(dur);
-          } catch {}
-        }
+      if (activeAudioSourceRef.current === 'yt' && ytPlayerRef.current?.getCurrentTime) {
+        try {
+          const t = ytPlayerRef.current.getCurrentTime() || 0;
+          const d = ytPlayerRef.current.getDuration() || 0;
+          setTime(t);
+          setDuration(d);
+        } catch {}
       }
     }, 500);
 
     return () => {
       mounted = false;
-      if (timerRef.current) clearInterval(timerRef.current);
+      clearInterval(timerRef.current);
       audio.pause();
+      audio.src = '';
     };
   }, [nextTrack]);
 
-  // Play a specific track index
-  const playIndex = useCallback((next: number) => {
+  // Main playback switcher
+  const playIndex = useCallback(async (i: number) => {
     const list = tracksRef.current;
-    const track = list[next];
+    if (i < 0 || i >= list.length) return;
+    const track = list[i];
     if (!track) return;
 
-    setError('');
-    setIndex(next);
-    indexRef.current = next;
-    setTime(0);
-    setDuration((track.duracao_ms || 0) / 1000);
+    setIndex(i);
     setMetadata(track);
-    setStatus('buffering');
+    setTime(0);
+    setDuration(track.duracao_ms ? Math.round(track.duracao_ms / 1000) : 0);
 
-    // If track has a local offline blob, play with Native HTML5 Audio (100% Screen Lock & Offline Support!)
-    if (track.audioBlobUrl) {
+    // Stop both engines before switching
+    if (nativeAudioRef.current) {
+      nativeAudioRef.current.pause();
+      nativeAudioRef.current.removeAttribute('src');
+      nativeAudioRef.current.load();
+    }
+    if (ytPlayerRef.current?.stopVideo) {
+      ytPlayerRef.current.stopVideo();
+    }
+
+    // Engine 1: Direct Audio URL or Blob
+    if (track.audioBlobUrl || track.audioUrl) {
       activeAudioSourceRef.current = 'native';
-      const audio = nativeAudioRef.current;
-      if (audio) {
-        if (ytPlayerRef.current?.pauseVideo) ytPlayerRef.current.pauseVideo();
-        audio.src = track.audioBlobUrl;
-        audio.volume = muted ? 0 : volume / 100;
-        audio.play().catch(() => {});
+      const url = track.audioBlobUrl || track.audioUrl!;
+      if (nativeAudioRef.current) {
+        nativeAudioRef.current.src = url;
+        nativeAudioRef.current.volume = muted ? 0 : volume / 100;
+        try {
+          await nativeAudioRef.current.play();
+        } catch {
+          setStatus('paused');
+        }
       }
       return;
     }
 
-    // Otherwise play via YouTube Engine
+    // Engine 2: YouTube Audio Stream via VideoId
     if (track.videoId) {
       activeAudioSourceRef.current = 'yt';
-      if (nativeAudioRef.current) {
-        nativeAudioRef.current.pause();
+      if (ytPlayerRef.current?.loadVideoById) {
+        ytPlayerRef.current.loadVideoById(track.videoId);
+        ytPlayerRef.current.setVolume(muted ? 0 : volume);
+        ytPlayerRef.current.playVideo();
       }
-      const player = ytPlayerRef.current;
-      if (isYtReadyRef.current && player && player.loadVideoById) {
-        player.loadVideoById(track.videoId);
-        player.setVolume(muted ? 0 : volume);
-        player.playVideo();
-      }
+      return;
     }
-  }, [muted, volume, setMetadata]);
 
-  // Volume synchronization
-  useEffect(() => {
-    const vol = muted ? 0 : volume;
-    if (nativeAudioRef.current) nativeAudioRef.current.volume = vol / 100;
-    if (ytPlayerRef.current?.setVolume) ytPlayerRef.current.setVolume(vol);
-  }, [volume, muted]);
+    // If track doesn't have videoId or audioUrl yet, search online
+    try {
+      setStatus('buffering');
+      showToast(`Buscando áudio de "${track.nome_musica}"...`);
+      const r = await fetch(`${getApiBase()}/api/search?nome_musica=${encodeURIComponent(track.nome_musica)}&nome_artista=${encodeURIComponent(track.nome_artista)}`, { cache: 'no-store' });
+      const result = await safeFetchJson(r);
+      if (r.ok && result.videoId) {
+        track.videoId = result.videoId;
+        track.videoTitle = result.titulo;
+        setTracks([...list]);
+        activeAudioSourceRef.current = 'yt';
+        if (ytPlayerRef.current?.loadVideoById) {
+          ytPlayerRef.current.loadVideoById(result.videoId);
+          ytPlayerRef.current.setVolume(muted ? 0 : volume);
+          ytPlayerRef.current.playVideo();
+        }
+      } else {
+        throw new Error('Áudio não localizado');
+      }
+    } catch {
+      showToast(`Áudio não disponível para "${track.nome_musica}".`);
+      nextTrack();
+    }
+  }, [muted, volume, nextTrack, setMetadata]);
 
-  // Lockscreen Media Session Action handlers
+  // MediaSession Action Handlers
   useEffect(() => {
     if (!('mediaSession' in navigator)) return;
     const ms = navigator.mediaSession;
-    const safe = (name: MediaSessionAction, fn: () => void) => { try { ms.setActionHandler(name, fn); } catch {} };
+    const safe = (action: MediaSessionAction, fn: () => void) => {
+      try { ms.setActionHandler(action, fn); } catch {}
+    };
 
     safe('play', () => {
       if (activeAudioSourceRef.current === 'native' && nativeAudioRef.current) {
@@ -387,7 +412,7 @@ export default function App() {
 
   const togglePlayPause = () => {
     if (indexRef.current === null) {
-      const first = tracksRef.current.findIndex(t => !!t.videoId || !!t.audioBlobUrl);
+      const first = tracksRef.current.findIndex(t => !!t.videoId || !!t.audioBlobUrl || !!t.audioUrl);
       if (first >= 0) playIndex(first);
       return;
     }
@@ -402,11 +427,11 @@ export default function App() {
     }
   };
 
-  // Search single song or import Spotify Playlist
+  // Universal Search / Link Importer (Spotify, YouTube, Direct MP3, Search Query)
   const handleSearchOrImport = async () => {
     const val = query.trim();
     if (!val) {
-      setError('Digite o nome de uma música ou cole o link do Spotify.');
+      setError('Digite o nome de uma música ou cole o link do Spotify, YouTube ou áudio.');
       return;
     }
 
@@ -414,14 +439,77 @@ export default function App() {
     setLoading(true);
     setProgress(0);
 
-    const spotifyDetails = parseSpotifyDetails(val);
+    const detected = detectInputType(val);
 
-    if (spotifyDetails.id) {
-      // Import Spotify Playlist / Album / Track
+    // 1. DIRECT AUDIO FILE (.mp3, .m4a, .wav)
+    if (detected.kind === 'direct_audio') {
+      try {
+        const directTrack: Track = {
+          nome_musica: detected.filename,
+          nome_artista: 'Web Audio',
+          audioUrl: detected.audioUrl,
+          duracao_ms: 180000,
+          capa: placeholder
+        };
+        const updated = [directTrack, ...tracks];
+        setTracks(updated);
+        setActiveTab('queue');
+        playIndex(0);
+        showToast('Áudio da Web carregado com sucesso!');
+      } catch (e: any) {
+        setError(e?.message || 'Não foi possível carregar o arquivo de áudio.');
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
+    // 2. YOUTUBE SINGLE VIDEO / SHORTS / MUSIC LINK
+    if (detected.kind === 'youtube_video') {
+      try {
+        showToast('Carregando áudio do YouTube...');
+        const ytTrack = await resolveYouTubeVideo(detected.videoId, detected.url);
+        const updated = [ytTrack, ...tracks.filter(t => t.videoId !== ytTrack.videoId)];
+        setTracks(updated);
+        setActiveTab('queue');
+        playIndex(0);
+        showToast(`▶ Tocando "${ytTrack.nome_musica}" (Apenas Áudio)`);
+      } catch (e: any) {
+        setError(e?.message || 'Erro ao processar vídeo do YouTube.');
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
+    // 3. YOUTUBE PLAYLIST LINK (Do NOT auto-play; wait for manual trigger)
+    if (detected.kind === 'youtube_playlist') {
+      try {
+        showToast('Importando playlist do YouTube...');
+        const ytPlaylistData = await resolveYouTubePlaylist(detected.listId, detected.url);
+
+        if (!ytPlaylistData || !ytPlaylistData.faixas || ytPlaylistData.faixas.length === 0) {
+          throw new Error('Nenhuma faixa encontrada nesta playlist do YouTube.');
+        }
+
+        setPlaylist(ytPlaylistData);
+        setTracks(ytPlaylistData.faixas);
+        setActiveTab('queue');
+        showToast(`Playlist "${ytPlaylistData.nome_playlist}" carregada! Toque em ▶ Tocar quando quiser.`);
+      } catch (e: any) {
+        setError(e?.message || 'Não foi possível carregar a playlist do YouTube. Verifique se é pública.');
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
+    // 4. SPOTIFY PLAYLIST / ALBUM / TRACK (Do NOT auto-play; wait for manual trigger)
+    if (detected.kind === 'spotify') {
       try {
         let data: PlaylistData | null = null;
 
-        // Step 1: Try server endpoint with safe JSON parser
+        // Step 1: Server endpoint
         try {
           const response = await fetch(`${getApiBase()}/api/public-playlist?url=${encodeURIComponent(val)}`, {
             cache: 'no-store'
@@ -430,10 +518,10 @@ export default function App() {
             data = await safeFetchJson<PlaylistData>(response);
           }
         } catch (serverErr) {
-          console.warn('Endpoint /api/public-playlist indisponível ou em fallback:', serverErr);
+          console.warn('Fallback para extração direta do Spotify:', serverErr);
         }
 
-        // Step 2: Fallback to direct client-side extraction if server didn't provide playlist
+        // Step 2: Direct browser extraction fallback
         if (!data || !data.sucesso || !data.faixas || data.faixas.length === 0) {
           data = await extractSpotifyDirectly(val);
         }
@@ -467,43 +555,182 @@ export default function App() {
         }
         setTracks(resolved);
         setActiveTab('queue');
-        const first = resolved.findIndex(t => !!t.videoId);
-        if (first >= 0) playIndex(first);
-        showToast('Playlist importada com sucesso!');
+        showToast('Playlist importada com sucesso! Toque em ▶ Tocar para iniciar quando desejar.');
       } catch (e: any) {
         setError(e?.message || 'Não foi possível carregar a playlist. Verifique se o link é público.');
       } finally {
         setLoading(false);
       }
-    } else {
-      // Single Track Search
+      return;
+    }
+
+    // 5. STANDARD TEXT SEARCH (Single Song)
+    try {
+      const r = await fetch(`${getApiBase()}/api/search?nome_musica=${encodeURIComponent(val)}`, { cache: 'no-store' });
+      const result = await safeFetchJson(r);
+      if (!r.ok || !result.videoId) throw new Error(result?.error || 'Música não encontrada.');
+
+      const newTrack: Track = {
+        nome_musica: result.titulo || val,
+        nome_artista: result.canal || 'Artista',
+        videoId: result.videoId,
+        duracao_ms: (result.duracao || 180) * 1000,
+        capa: result.capa || placeholder
+      };
+
+      const updated = [newTrack, ...tracks.filter(t => t.videoId !== newTrack.videoId)];
+      setTracks(updated);
+      setActiveTab('queue');
+      playIndex(0);
+      showToast('Música adicionada à fila!');
+    } catch (e: any) {
+      setError(e?.message || 'Não foi possível encontrar essa música.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // --- 100% CLOUD PLAYLIST MANAGEMENT (Firebase Firestore • 0 MB no Celular) ---
+
+  const handleCreateCloudPlaylist = async () => {
+    if (!newPlaylistName.trim()) return;
+    try {
+      showToast(`☁ Criando playlist "${newPlaylistName}" na Nuvem (0 MB)...`);
+      const newPl = await createCloudPlaylist(newPlaylistName, tracksToAddToPlaylist || []);
+      await refreshCloud();
+      setIsCreateModalOpen(false);
+      setNewPlaylistName('');
+      setTracksToAddToPlaylist(null);
+      showToast(`✔ Playlist "${newPl.nome_playlist}" salva na Nuvem (0 MB no celular)!`);
+    } catch (e: any) {
+      showToast(e?.message || 'Erro ao criar playlist na nuvem.');
+    }
+  };
+
+  const handleAddSelectedToCloudPlaylist = async (plId: string) => {
+    const activePl = selectedCloudPlaylistId
+      ? cloudPlaylists.find(p => p.id === selectedCloudPlaylistId)
+      : null;
+
+    const listToUse = activePl ? (activePl.faixas || []) : tracks;
+
+    const tracksToAdd = tracksToAddToPlaylist || (selectedIndices.length > 0
+      ? selectedIndices.map(i => listToUse[i]).filter(Boolean)
+      : []);
+
+    if (!tracksToAdd.length) {
+      showToast('Nenhuma música selecionada.');
+      return;
+    }
+
+    try {
+      showToast(`☁ Salvando ${tracksToAdd.length} música(s) na Nuvem...`);
+      const updated = await addTracksToCloudPlaylist(plId, tracksToAdd);
+      await refreshCloud();
+      setTracksToAddToPlaylist(null);
+      setIsSelectionMode(false);
+      setSelectedIndices([]);
+      if (updated) {
+        showToast(`✔ ${tracksToAdd.length} música(s) adicionada(s) à "${updated.nome_playlist}" na Nuvem!`);
+      }
+    } catch (e: any) {
+      showToast(e?.message || 'Erro ao adicionar músicas à playlist na nuvem.');
+    }
+  };
+
+  const handleRemoveTrackFromActiveCloudPlaylist = async (plId: string, trackIdx: number) => {
+    try {
+      await removeTrackFromCloudPlaylist(plId, trackIdx);
+      await refreshCloud();
+      showToast('Música removida da playlist na Nuvem.');
+    } catch (e: any) {
+      showToast(e?.message || 'Erro ao remover música.');
+    }
+  };
+
+  const handleRemoveSelectedFromCurrent = async () => {
+    if (selectedCloudPlaylistId) {
+      // Remove from Cloud Playlist (Firestore)
       try {
-        const r = await fetch(`${getApiBase()}/api/search?nome_musica=${encodeURIComponent(val)}`, { cache: 'no-store' });
-        const result = await safeFetchJson(r);
-        if (!r.ok || !result.videoId) throw new Error(result?.error || 'Música não encontrada.');
-
-        const newTrack: Track = {
-          nome_musica: result.titulo || val,
-          nome_artista: result.canal || 'Artista',
-          videoId: result.videoId,
-          duracao_ms: (result.duracao || 180) * 1000,
-          capa: result.capa || placeholder
-        };
-
-        const updated = [newTrack, ...tracks.filter(t => t.videoId !== newTrack.videoId)];
-        setTracks(updated);
-        setActiveTab('queue');
-        playIndex(0);
-        showToast('Música adicionada à fila!');
+        await removeMultipleTracksFromCloudPlaylist(selectedCloudPlaylistId, selectedIndices);
+        await refreshCloud();
+        showToast(`${selectedIndices.length} música(s) removida(s) da playlist na Nuvem.`);
       } catch (e: any) {
-        setError(e?.message || 'Não foi possível encontrar essa música.');
-      } finally {
-        setLoading(false);
+        showToast(e?.message || 'Erro ao remover músicas na nuvem.');
+      }
+    } else {
+      // Remove from active queue
+      const removeSet = new Set(selectedIndices);
+      const newTracks = tracks.filter((_, i) => !removeSet.has(i));
+      setTracks(newTracks);
+      showToast(`${selectedIndices.length} música(s) removida(s) da fila.`);
+    }
+    setIsSelectionMode(false);
+    setSelectedIndices([]);
+  };
+
+  const handleDeleteCloudPlaylist = async (plId: string, plName: string) => {
+    if (confirm(`Tem certeza que deseja excluir a playlist "${plName}" da Nuvem? (0 MB no celular)`)) {
+      try {
+        await deleteCloudPlaylist(plId);
+        await refreshCloud();
+        if (selectedCloudPlaylistId === plId) setSelectedCloudPlaylistId(null);
+        showToast('Playlist excluída da Nuvem.');
+      } catch (e: any) {
+        showToast(e?.message || 'Erro ao excluir playlist.');
       }
     }
   };
 
-  // Save Track to Cloud (Firebase - 0 MB local storage)
+  const handleRenameCloudPlaylist = async () => {
+    if (!renameTarget || !renameTarget.name.trim()) return;
+    try {
+      await renameCloudPlaylist(renameTarget.id, renameTarget.name);
+      await refreshCloud();
+      setRenameTarget(null);
+      showToast('Playlist renomeada na Nuvem!');
+    } catch (e: any) {
+      showToast(e?.message || 'Erro ao renomear playlist.');
+    }
+  };
+
+  const playCloudPlaylist = (pl: CloudPlaylistItem) => {
+    if (!pl.faixas || !pl.faixas.length) {
+      showToast('Playlist vazia.');
+      return;
+    }
+    setPlaylist({
+      sucesso: true,
+      playlist_id: pl.id,
+      nome_playlist: pl.nome_playlist,
+      capa_playlist: pl.capa_playlist,
+      total_faixas: pl.total_faixas,
+      faixas: pl.faixas
+    });
+    setTracks(pl.faixas);
+    setActiveTab('queue');
+    const first = pl.faixas.findIndex(t => !!t.videoId || !!t.audioBlobUrl || !!t.audioUrl);
+    if (first >= 0) playIndex(first);
+    showToast(`▶ Tocando playlist "${pl.nome_playlist}"`);
+  };
+
+  // Toggle selection for an index
+  const toggleSelectIndex = (i: number) => {
+    setSelectedIndices(prev =>
+      prev.includes(i) ? prev.filter(idx => idx !== i) : [...prev, i]
+    );
+  };
+
+  // Select all or deselect all
+  const toggleSelectAll = (total: number) => {
+    if (selectedIndices.length === total) {
+      setSelectedIndices([]);
+    } else {
+      setSelectedIndices(Array.from({ length: total }, (_, i) => i));
+    }
+  };
+
+  // Cloud persistence helper
   const handleSaveTrackToCloud = async (track: Track) => {
     if (!track.videoId && !track.nome_musica) return;
     try {
@@ -516,24 +743,22 @@ export default function App() {
     }
   };
 
-  // Save Playlist to Cloud (Firebase - 0 MB local storage)
-  const handleSavePlaylistToCloud = async () => {
-    if (!playlist || !tracks.length) return;
+  const handleSavePlaylistToCloud = async (plDataOverride?: PlaylistData) => {
+    const plToSave = plDataOverride || (playlist ? { ...playlist, faixas: tracks } : null);
+    if (!plToSave || !plToSave.faixas.length) {
+      showToast('Nenhuma playlist ativa para salvar.');
+      return;
+    }
     try {
-      showToast(`☁ Salvando playlist "${playlist.nome_playlist}" na Nuvem...`);
-      const plData: PlaylistData = {
-        ...playlist,
-        faixas: tracks
-      };
-      await savePlaylistToCloud(plData);
+      showToast(`☁ Salvando "${plToSave.nome_playlist}" na Nuvem (0 MB)...`);
+      await savePlaylistToCloud(plToSave);
       await refreshCloud();
-      showToast(`✔ Playlist "${playlist.nome_playlist}" salva na Nuvem com sucesso!`);
+      showToast(`✔ "${plToSave.nome_playlist}" salva na Nuvem (0 MB no celular)!`);
     } catch (e: any) {
       showToast(e?.message || 'Erro ao salvar playlist na nuvem.');
     }
   };
 
-  // Play Cloud Track
   const playCloudTrack = (item: CloudTrackItem) => {
     const tr: Track = {
       nome_musica: item.nome_musica,
@@ -548,73 +773,14 @@ export default function App() {
     showToast(`▶ Tocando "${item.nome_musica}" da Nuvem`);
   };
 
-  // Play Cloud Playlist
-  const playCloudPlaylist = (pl: CloudPlaylistItem) => {
-    if (!pl.faixas || !pl.faixas.length) {
-      showToast('Playlist vazia');
-      return;
-    }
-    setPlaylist({
-      sucesso: true,
-      playlist_id: pl.id,
-      nome_playlist: pl.nome_playlist,
-      capa_playlist: pl.capa_playlist,
-      total_faixas: pl.total_faixas,
-      faixas: pl.faixas
-    });
-    setTracks(pl.faixas);
-    setActiveTab('queue');
-    const first = pl.faixas.findIndex(t => !!t.videoId);
-    if (first >= 0) playIndex(first);
-    showToast(`▶ Carregando playlist "${pl.nome_playlist}" da Nuvem`);
-  };
-
-  // Download Track ("Ouça e Baixe")
-  const downloadTrack = async (track: Track) => {
-    if (!track.videoId && !track.nome_musica) return;
-    const trackId = track.spotify_id || track.videoId || `${track.nome_musica}-${track.nome_artista}`;
-
-    showToast(`Baixando "${track.nome_musica}" para ouvir offline...`);
-
-    try {
-      // Create a persistent audio stream packet / offline record
-      const downloaded: DownloadedTrack = {
-        id: trackId,
-        nome_musica: track.nome_musica,
-        nome_artista: track.nome_artista,
-        capa: track.capa,
-        duracao_ms: track.duracao_ms,
-        videoId: track.videoId,
-        downloadedAt: Date.now()
-      };
-
-      await saveTrackOffline(downloaded);
-      await refreshDownloaded();
-      showToast(`✔ "${track.nome_musica}" salva para ouvir offline!`);
-    } catch {
-      showToast('Erro ao salvar música offline.');
-    }
-  };
-
-  // Play downloaded offline list
-  const playOfflineTrack = (item: DownloadedTrack, offlineIdx: number) => {
-    const convertedTracks: Track[] = downloadedTracks.map(d => ({
-      nome_musica: d.nome_musica,
-      nome_artista: d.nome_artista,
-      capa: d.capa,
-      duracao_ms: d.duracao_ms,
-      videoId: d.videoId,
-      isOffline: true
-    }));
-    setTracks(convertedTracks);
-    playIndex(offlineIdx);
-  };
-
   const current = index !== null ? tracks[index] : null;
+  const activeCloudPlaylist = selectedCloudPlaylistId
+    ? cloudPlaylists.find(p => p.id === selectedCloudPlaylistId)
+    : null;
 
   return (
     <div className="app-container">
-      {/* Hidden Engines */}
+      {/* Hidden YouTube Engine - Audio Only (1x1 px) */}
       <div id="myt-yt-engine" style={{ position: 'fixed', top: -9999, left: -9999, width: 1, height: 1, pointerEvents: 'none' }} />
 
       {/* Toast Notification */}
@@ -646,48 +812,66 @@ export default function App() {
             </div>
             <div>
               <div className="brand-title">Probe Music</div>
-              <div className="brand-sub">Ouça e Baixe</div>
+              <div className="brand-sub" style={{ color: '#00f0ff' }}>☁ 100% Na Nuvem • 0 MB no Celular</div>
             </div>
           </div>
 
           <div className="tabs-bar">
             <button
               className={`tab-btn ${activeTab === 'search' ? 'active' : ''}`}
-              onClick={() => setActiveTab('search')}
+              onClick={() => { setActiveTab('search'); setSelectedCloudPlaylistId(null); setIsSelectionMode(false); }}
             >
-              🔍 Pesquisa
+              🔍 Buscar
             </button>
             <button
               className={`tab-btn ${activeTab === 'queue' ? 'active' : ''}`}
-              onClick={() => setActiveTab('queue')}
+              onClick={() => { setActiveTab('queue'); setSelectedCloudPlaylistId(null); setIsSelectionMode(false); }}
             >
               🎵 Fila ({tracks.length})
             </button>
             <button
-              className={`tab-btn ${activeTab === 'cloud' ? 'active' : ''}`}
-              onClick={() => { setActiveTab('cloud'); refreshCloud(); }}
+              className={`tab-btn ${activeTab === 'cloud_playlists' ? 'active' : ''}`}
+              onClick={() => { setActiveTab('cloud_playlists'); refreshCloud(); setIsSelectionMode(false); }}
             >
-              ☁ Nuvem ({cloudTracks.length + cloudPlaylists.length})
+              ☁ Playlists ({cloudPlaylists.length})
             </button>
             <button
-              className={`tab-btn ${activeTab === 'downloads' ? 'active' : ''}`}
-              onClick={() => setActiveTab('downloads')}
+              className={`tab-btn ${activeTab === 'cloud_tracks' ? 'active' : ''}`}
+              onClick={() => { setActiveTab('cloud_tracks'); refreshCloud(); setSelectedCloudPlaylistId(null); setIsSelectionMode(false); }}
             >
-              📥 Baixadas ({downloadedTracks.length})
+              ☁ Músicas ({cloudTracks.length})
             </button>
           </div>
         </div>
       </header>
 
-      {/* Main Views */}
+      {/* Cloud Guarantee Top Banner */}
+      <div style={{
+        background: 'rgba(0, 240, 255, 0.08)',
+        borderBottom: '1px solid rgba(0, 240, 255, 0.18)',
+        padding: '6px 16px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 8,
+        fontSize: 12,
+        color: '#00f0ff',
+        fontWeight: 600
+      }}>
+        <span>☁ Armazenamento 100% na Nuvem (Firebase)</span>
+        <span style={{ color: '#9d8db8' }}>•</span>
+        <span>0 MB ocupados no seu dispositivo</span>
+      </div>
+
+      {/* Main Content Area */}
       <main>
-        {/* Tab 1: Search & Spotify Importer */}
+        {/* TAB 1: SEARCH & UNIVERSAL LINK IMPORTER */}
         {activeTab === 'search' && (
           <div>
             <div className="search-card">
               <h1 className="search-title">Ouça Qualquer Música ou Playlist</h1>
               <p className="search-sub">
-                Pesquise por artista, música ou cole o link da playlist do Spotify para importar e salvar na Nuvem (0 MB no celular).
+                Cole links do <b>Spotify</b>, <b>YouTube</b>, links diretos de <b>áudio MP3</b> ou digite o nome de qualquer música/artista.
               </p>
 
               <div className="search-input-group">
@@ -695,14 +879,14 @@ export default function App() {
                   value={query}
                   onChange={e => setQuery(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && handleSearchOrImport()}
-                  placeholder="Nome da música, artista ou link do Spotify…"
+                  placeholder="Nome, artista, link do Spotify ou YouTube..."
                 />
                 <button
                   className="btn-primary"
                   onClick={handleSearchOrImport}
                   disabled={loading}
                 >
-                  {loading ? 'Buscando…' : 'Buscar / Importar'}
+                  {loading ? 'Processando…' : 'Buscar / Importar'}
                 </button>
               </div>
 
@@ -726,11 +910,11 @@ export default function App() {
 
             {/* Quick Suggestions */}
             <div style={{ marginBottom: 24 }}>
-              <h3 style={{ fontSize: 14, color: '#9d8db8', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+              <h3 style={{ fontSize: 13, color: '#9d8db8', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 0.5 }}>
                 Sugestões Rápidas
               </h3>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                {['Top Brasil', 'Matuê', 'Coldplay', 'Funk 2026', 'Sertanejo', 'Gospel', 'Rock Clássico', 'Eletrônica'].map(tag => (
+                {['Top Brasil', 'Matuê', 'Coldplay', 'Funk 2026', 'Sertanejo', 'Gospel', 'Rock Clássico', 'Eletrônica', 'Trap BR', 'Hits Internacionais'].map(tag => (
                   <button
                     key={tag}
                     onClick={() => { setQuery(tag); }}
@@ -749,10 +933,34 @@ export default function App() {
                 ))}
               </div>
             </div>
+
+            {/* Links Types Info Card */}
+            <div style={{
+              background: 'rgba(22, 15, 43, 0.4)',
+              border: '1px solid rgba(157, 78, 221, 0.2)',
+              borderRadius: 16,
+              padding: '16px 20px',
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+              gap: 16
+            }}>
+              <div>
+                <b style={{ color: '#00f0ff', fontSize: 13, display: 'block', marginBottom: 4 }}>🎵 Links do Spotify</b>
+                <p style={{ color: '#9d8db8', fontSize: 12, margin: 0 }}>Playlists, álbuns ou músicas públicas.</p>
+              </div>
+              <div>
+                <b style={{ color: '#ff4081', fontSize: 13, display: 'block', marginBottom: 4 }}>▶ Links do YouTube</b>
+                <p style={{ color: '#9d8db8', fontSize: 12, margin: 0 }}>Vídeos ou playlists completas (Áudio super leve, sem vídeo).</p>
+              </div>
+              <div>
+                <b style={{ color: '#c77dff', fontSize: 13, display: 'block', marginBottom: 4 }}>☁ Nuvem 0 MB</b>
+                <p style={{ color: '#9d8db8', fontSize: 12, margin: 0 }}>Crie e salve playlists inteiras na Nuvem sem gastar memória do celular.</p>
+              </div>
+            </div>
           </div>
         )}
 
-        {/* Tab 2: Current Queue / Playlist */}
+        {/* TAB 2: CURRENT QUEUE / PLAYLIST */}
         {activeTab === 'queue' && (
           <div>
             {playlist && (
@@ -760,44 +968,97 @@ export default function App() {
                 <img src={playlist.capa_playlist || placeholder} alt="" />
                 <div className="playlist-info">
                   <h2>{playlist.nome_playlist}</h2>
-                  <p>{playlist.total_faixas} músicas importadas do Spotify</p>
+                  <p>{playlist.total_faixas} músicas carregadas</p>
                   <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 10 }}>
                     <button
                       className="btn-primary"
                       onClick={() => {
-                        const first = tracks.findIndex(t => !!t.videoId);
+                        const first = tracks.findIndex(t => !!t.videoId || !!t.audioBlobUrl || !!t.audioUrl);
                         if (first >= 0) playIndex(first);
                       }}
                     >
                       ▶ Tocar Playlist
                     </button>
                     <button
-                      style={{
-                        background: 'rgba(0, 240, 255, 0.15)',
-                        border: '1px solid #00f0ff',
-                        color: '#00f0ff',
-                        padding: '10px 18px',
-                        borderRadius: 12,
-                        fontWeight: 700,
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 6
-                      }}
-                      onClick={handleSavePlaylistToCloud}
+                      className="pill-btn"
+                      style={{ background: 'rgba(0, 240, 255, 0.15)', borderColor: '#00f0ff', color: '#00f0ff' }}
+                      onClick={() => handleSavePlaylistToCloud()}
                     >
-                      ☁ Salvar na Nuvem (0 MB)
+                      ☁ Salvar Playlist na Nuvem (0 MB)
+                    </button>
+                    <button
+                      className="pill-btn"
+                      style={{ background: 'rgba(157, 78, 221, 0.25)', borderColor: '#9d4edd' }}
+                      onClick={() => {
+                        setTracksToAddToPlaylist(tracks);
+                      }}
+                    >
+                      + Adicionar a uma Playlist
                     </button>
                   </div>
                 </div>
               </div>
             )}
 
+            {/* Queue Header & Multi-Selection Toggle */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-              <h2 style={{ fontSize: 18, fontWeight: 800, color: '#fff' }}>Fila de Reprodução</h2>
-              <span style={{ fontSize: 12, color: '#9d8db8' }}>{tracks.length} músicas</span>
+              <div>
+                <h2 style={{ fontSize: 18, fontWeight: 800, color: '#fff' }}>Fila de Reprodução</h2>
+                <span style={{ fontSize: 12, color: '#9d8db8' }}>{tracks.length} músicas na fila</span>
+              </div>
+              {tracks.length > 0 && (
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    className={`pill-btn ${isSelectionMode ? 'primary' : ''}`}
+                    onClick={() => {
+                      setIsSelectionMode(!isSelectionMode);
+                      setSelectedIndices([]);
+                    }}
+                  >
+                    {isSelectionMode ? '✖ Cancelar Seleção' : '☑ Selecionar Músicas'}
+                  </button>
+                </div>
+              )}
             </div>
 
+            {/* Selection Action Bar (Visible when Selection Mode is active) */}
+            {isSelectionMode && (
+              <div className="selection-bar">
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <button
+                    className="pill-btn"
+                    onClick={() => toggleSelectAll(tracks.length)}
+                  >
+                    {selectedIndices.length === tracks.length ? '◻ Desmarcar Todas' : '☑ Selecionar Todas'}
+                  </button>
+                  <span style={{ fontSize: 13, color: '#00f0ff', fontWeight: 700 }}>
+                    {selectedIndices.length} de {tracks.length} selecionadas
+                  </span>
+                </div>
+
+                <div className="selection-actions">
+                  <button
+                    className="pill-btn primary"
+                    disabled={selectedIndices.length === 0}
+                    onClick={() => {
+                      const selected = selectedIndices.map(i => tracks[i]).filter(Boolean);
+                      setTracksToAddToPlaylist(selected);
+                    }}
+                  >
+                    + Adicionar à Playlist na Nuvem
+                  </button>
+                  <button
+                    className="pill-btn danger"
+                    disabled={selectedIndices.length === 0}
+                    onClick={handleRemoveSelectedFromCurrent}
+                  >
+                    🗑 Remover da Fila
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Track Rows */}
             {tracks.length === 0 ? (
               <div style={{ textAlign: 'center', padding: '60px 20px', color: '#6d5d88' }}>
                 <div style={{ fontSize: 36, marginBottom: 10 }}>🎵</div>
@@ -811,61 +1072,377 @@ export default function App() {
                 </button>
               </div>
             ) : (
-              tracks.map((track, i) => (
-                <div
-                  key={`${track.nome_musica}-${i}`}
-                  className={`track-row ${i === index ? 'active' : ''}`}
-                >
-                  <span style={{ color: '#6d5d88', fontSize: 12, textAlign: 'center' }}>
-                    {i === index && status === 'playing' ? (
-                      <div className="eq-bars">
-                        <div className="eq-bar" />
-                        <div className="eq-bar" />
-                        <div className="eq-bar" />
+              tracks.map((track, i) => {
+                const isSelected = selectedIndices.includes(i);
+                return (
+                  <div
+                    key={`${track.nome_musica}-${i}`}
+                    className={`track-row ${i === index ? 'active' : ''}`}
+                    style={isSelected ? { borderColor: '#00f0ff', background: 'rgba(0, 240, 255, 0.12)' } : undefined}
+                  >
+                    {/* Index / Checkbox / Equalizer */}
+                    {isSelectionMode ? (
+                      <div
+                        className={`custom-checkbox ${isSelected ? 'checked' : ''}`}
+                        onClick={() => toggleSelectIndex(i)}
+                      >
+                        {isSelected && '✓'}
                       </div>
                     ) : (
-                      i + 1
+                      <span style={{ color: '#6d5d88', fontSize: 12, textAlign: 'center' }}>
+                        {i === index && status === 'playing' ? (
+                          <div className="eq-bars">
+                            <div className="eq-bar" />
+                            <div className="eq-bar" />
+                            <div className="eq-bar" />
+                          </div>
+                        ) : (
+                          i + 1
+                        )}
+                      </span>
                     )}
-                  </span>
-                  <img src={track.capa || placeholder} alt="" />
-                  <div
-                    className="track-info-col"
-                    style={{ cursor: 'pointer' }}
-                    onClick={() => playIndex(i)}
-                  >
-                    <b>{track.nome_musica}</b>
-                    <small>{track.nome_artista}</small>
+
+                    <img src={track.capa || placeholder} alt="" />
+                    <div
+                      className="track-info-col"
+                      style={{ cursor: 'pointer' }}
+                      onClick={() => isSelectionMode ? toggleSelectIndex(i) : playIndex(i)}
+                    >
+                      <b>{track.nome_musica}</b>
+                      <small>{track.nome_artista}</small>
+                    </div>
+
+                    {/* Quick Add to Cloud Playlist Button */}
+                    <button
+                      className="action-btn"
+                      title="Adicionar à Playlist na Nuvem"
+                      style={{ color: '#c77dff', fontSize: 13, fontWeight: 700 }}
+                      onClick={() => setTracksToAddToPlaylist([track])}
+                    >
+                      +♫
+                    </button>
+
+                    {/* Save to Cloud Library */}
+                    <button
+                      className="action-btn"
+                      title="Salvar na Nuvem (0 MB no celular)"
+                      style={{ color: '#00f0ff' }}
+                      onClick={() => handleSaveTrackToCloud(track)}
+                    >
+                      ☁
+                    </button>
+
+                    <button
+                      className="action-btn"
+                      style={{ color: i === index && status === 'playing' ? '#00f0ff' : '#9d4edd' }}
+                      onClick={() => playIndex(i)}
+                    >
+                      {i === index && status === 'playing' ? '⏸' : '▶'}
+                    </button>
                   </div>
-                  <button
-                    className="action-btn"
-                    title="Salvar na Nuvem (0 MB no celular)"
-                    style={{ color: '#00f0ff' }}
-                    onClick={() => handleSaveTrackToCloud(track)}
-                  >
-                    ☁
-                  </button>
-                  <button
-                    className="action-btn"
-                    title="Baixar para ouvir offline"
-                    onClick={() => downloadTrack(track)}
-                  >
-                    📥
-                  </button>
-                  <button
-                    className="action-btn"
-                    style={{ color: i === index && status === 'playing' ? '#00f0ff' : '#9d4edd' }}
-                    onClick={() => playIndex(i)}
-                  >
-                    {i === index && status === 'playing' ? '⏸' : '▶'}
-                  </button>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         )}
 
-        {/* Tab 3: Cloud Library ("Nuvem - 0 MB no celular") */}
-        {activeTab === 'cloud' && (
+        {/* TAB 3: CLOUD PLAYLISTS MANAGER (100% Firebase Firestore • 0 MB no Celular) */}
+        {activeTab === 'cloud_playlists' && (
+          <div>
+            {!selectedCloudPlaylistId ? (
+              // Overview of all Cloud Playlists
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18, flexWrap: 'wrap', gap: 12 }}>
+                  <div>
+                    <h2 style={{ fontSize: 20, fontWeight: 800, color: '#fff' }}>Playlists na Nuvem</h2>
+                    <p style={{ fontSize: 12, color: '#00f0ff' }}>
+                      ☁ Salvas 100% no Firebase • 0 MB de memória ocupada no celular
+                    </p>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button
+                      className="pill-btn"
+                      onClick={refreshCloud}
+                      disabled={loadingCloud}
+                    >
+                      {loadingCloud ? 'Atualizando…' : '🔄 Atualizar'}
+                    </button>
+                    <button
+                      className="btn-primary"
+                      onClick={() => {
+                        setTracksToAddToPlaylist(null);
+                        setIsCreateModalOpen(true);
+                      }}
+                    >
+                      + Criar Playlist na Nuvem
+                    </button>
+                  </div>
+                </div>
+
+                {cloudPlaylists.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '60px 20px', color: '#6d5d88', background: 'rgba(22,15,43,0.4)', borderRadius: 18, border: '1px dashed rgba(0,240,255,0.3)' }}>
+                    <div style={{ fontSize: 40, marginBottom: 10 }}>☁</div>
+                    <p style={{ color: '#fff', fontWeight: 700, marginBottom: 4 }}>Nenhuma playlist na Nuvem ainda</p>
+                    <p style={{ fontSize: 13, maxWidth: 360, margin: '0 auto 16px' }}>
+                      Crie sua primeira playlist na Nuvem! Todas as músicas ficam salvas no servidor sem gastar espaço do seu celular.
+                    </p>
+                    <button
+                      className="btn-primary"
+                      onClick={() => setIsCreateModalOpen(true)}
+                    >
+                      + Criar Playlist na Nuvem (0 MB)
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 14 }}>
+                    {cloudPlaylists.map(pl => (
+                      <div
+                        key={pl.id}
+                        style={{
+                          background: 'rgba(28, 18, 54, 0.7)',
+                          border: '1px solid rgba(0, 240, 255, 0.25)',
+                          borderRadius: 16,
+                          padding: 14,
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 10,
+                          transition: 'all 0.2s'
+                        }}
+                      >
+                        <div
+                          style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer' }}
+                          onClick={() => setSelectedCloudPlaylistId(pl.id)}
+                        >
+                          <img
+                            src={pl.capa_playlist || placeholder}
+                            alt=""
+                            style={{ width: 64, height: 64, borderRadius: 12, objectFit: 'cover' }}
+                          />
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <b style={{ display: 'block', fontSize: 14, color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {pl.nome_playlist}
+                            </b>
+                            <small style={{ color: '#00f0ff', fontSize: 12 }}>
+                              {pl.total_faixas} faixas • ☁ 0 MB
+                            </small>
+                          </div>
+                        </div>
+
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 10 }}>
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <button
+                              className="pill-btn primary"
+                              style={{ padding: '4px 10px', fontSize: 11 }}
+                              onClick={() => playCloudPlaylist(pl)}
+                            >
+                              ▶ Tocar
+                            </button>
+                            <button
+                              className="pill-btn"
+                              style={{ padding: '4px 10px', fontSize: 11 }}
+                              onClick={() => setSelectedCloudPlaylistId(pl.id)}
+                            >
+                              Abrir
+                            </button>
+                          </div>
+                          <div style={{ display: 'flex', gap: 4 }}>
+                            <button
+                              className="action-btn"
+                              title="Renomear Playlist"
+                              onClick={() => setRenameTarget({ id: pl.id, name: pl.nome_playlist })}
+                            >
+                              ✏
+                            </button>
+                            <button
+                              className="action-btn"
+                              title="Excluir da Nuvem"
+                              style={{ color: '#ff4081' }}
+                              onClick={() => handleDeleteCloudPlaylist(pl.id, pl.nome_playlist)}
+                            >
+                              🗑
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              // Detailed View of a Single Cloud Playlist
+              activeCloudPlaylist && (
+                <div>
+                  <button
+                    className="pill-btn"
+                    style={{ marginBottom: 14 }}
+                    onClick={() => {
+                      setSelectedCloudPlaylistId(null);
+                      setIsSelectionMode(false);
+                      setSelectedIndices([]);
+                    }}
+                  >
+                    ← Voltar para Playlists na Nuvem
+                  </button>
+
+                  <div className="playlist-banner">
+                    <img src={activeCloudPlaylist.capa_playlist || placeholder} alt="" />
+                    <div className="playlist-info">
+                      <h2>{activeCloudPlaylist.nome_playlist}</h2>
+                      <p>{activeCloudPlaylist.total_faixas} músicas salvas na Nuvem (0 MB no celular)</p>
+                      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 10 }}>
+                        <button
+                          className="btn-primary"
+                          onClick={() => playCloudPlaylist(activeCloudPlaylist)}
+                        >
+                          ▶ Tocar Tudo
+                        </button>
+                        <button
+                          className="pill-btn"
+                          onClick={() => setRenameTarget({ id: activeCloudPlaylist.id, name: activeCloudPlaylist.nome_playlist })}
+                        >
+                          ✏ Renomear
+                        </button>
+                        <button
+                          className="pill-btn danger"
+                          onClick={() => handleDeleteCloudPlaylist(activeCloudPlaylist.id, activeCloudPlaylist.nome_playlist)}
+                        >
+                          🗑 Excluir Playlist da Nuvem
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Header with multi-selection toggle */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+                    <h3 style={{ fontSize: 16, fontWeight: 700, color: '#fff' }}>Faixas da Playlist na Nuvem</h3>
+                    {activeCloudPlaylist.faixas.length > 0 && (
+                      <button
+                        className={`pill-btn ${isSelectionMode ? 'primary' : ''}`}
+                        onClick={() => {
+                          setIsSelectionMode(!isSelectionMode);
+                          setSelectedIndices([]);
+                        }}
+                      >
+                        {isSelectionMode ? '✖ Cancelar Seleção' : '☑ Selecionar Músicas'}
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Multi-selection bar for Cloud Playlist */}
+                  {isSelectionMode && (
+                    <div className="selection-bar">
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <button
+                          className="pill-btn"
+                          onClick={() => toggleSelectAll(activeCloudPlaylist.faixas.length)}
+                        >
+                          {selectedIndices.length === activeCloudPlaylist.faixas.length ? '◻ Desmarcar Todas' : '☑ Selecionar Todas'}
+                        </button>
+                        <span style={{ fontSize: 13, color: '#00f0ff', fontWeight: 700 }}>
+                          {selectedIndices.length} de {activeCloudPlaylist.faixas.length} selecionadas
+                        </span>
+                      </div>
+
+                      <div className="selection-actions">
+                        <button
+                          className="pill-btn primary"
+                          disabled={selectedIndices.length === 0}
+                          onClick={() => {
+                            const selected = selectedIndices.map(i => activeCloudPlaylist.faixas[i]).filter(Boolean);
+                            setTracksToAddToPlaylist(selected);
+                          }}
+                        >
+                          + Copiar para Outra Playlist
+                        </button>
+                        <button
+                          className="pill-btn danger"
+                          disabled={selectedIndices.length === 0}
+                          onClick={handleRemoveSelectedFromCurrent}
+                        >
+                          🗑 Remover Selecionadas da Nuvem
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Tracks list */}
+                  {activeCloudPlaylist.faixas.length === 0 ? (
+                    <div style={{ textAlign: 'center', padding: '50px 20px', color: '#6d5d88', background: 'rgba(22,15,43,0.4)', borderRadius: 18 }}>
+                      <p style={{ color: '#fff', fontWeight: 700, marginBottom: 4 }}>Esta playlist ainda não tem músicas</p>
+                      <p style={{ fontSize: 13, marginBottom: 14 }}>
+                        Pesquise músicas ou vá para a Fila e toque em <b>+♫</b> para adicionar faixas aqui.
+                      </p>
+                      <button className="btn-primary" onClick={() => setActiveTab('search')}>
+                        Buscar Músicas para Adicionar
+                      </button>
+                    </div>
+                  ) : (
+                    activeCloudPlaylist.faixas.map((track, i) => {
+                      const isSelected = selectedIndices.includes(i);
+                      return (
+                        <div
+                          key={`${track.nome_musica}-${i}`}
+                          className="track-row"
+                          style={isSelected ? { borderColor: '#00f0ff', background: 'rgba(0, 240, 255, 0.12)' } : undefined}
+                        >
+                          {isSelectionMode ? (
+                            <div
+                              className={`custom-checkbox ${isSelected ? 'checked' : ''}`}
+                              onClick={() => toggleSelectIndex(i)}
+                            >
+                              {isSelected && '✓'}
+                            </div>
+                          ) : (
+                            <span style={{ color: '#6d5d88', fontSize: 12, textAlign: 'center' }}>{i + 1}</span>
+                          )}
+
+                          <img src={track.capa || placeholder} alt="" />
+                          <div
+                            className="track-info-col"
+                            style={{ cursor: 'pointer' }}
+                            onClick={() => {
+                              if (isSelectionMode) {
+                                toggleSelectIndex(i);
+                              } else {
+                                setTracks(activeCloudPlaylist.faixas);
+                                playIndex(i);
+                              }
+                            }}
+                          >
+                            <b>{track.nome_musica}</b>
+                            <small>{track.nome_artista} • ☁ Nuvem (0 MB)</small>
+                          </div>
+
+                          <button
+                            className="action-btn"
+                            title="Remover desta playlist na Nuvem"
+                            style={{ color: '#ff4081' }}
+                            onClick={() => handleRemoveTrackFromActiveCloudPlaylist(activeCloudPlaylist.id, i)}
+                          >
+                            🗑
+                          </button>
+                          <button
+                            className="action-btn"
+                            style={{ color: '#00f0ff' }}
+                            onClick={() => {
+                              setTracks(activeCloudPlaylist.faixas);
+                              playIndex(i);
+                            }}
+                          >
+                            ▶
+                          </button>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              )
+            )}
+          </div>
+        )}
+
+        {/* TAB 4: CLOUD TRACKS (Firebase Firestore • 0 MB Storage) */}
+        {activeTab === 'cloud_tracks' && (
           <div>
             <div style={{
               background: 'linear-gradient(135deg, rgba(123, 44, 191, 0.25), rgba(0, 240, 255, 0.15))',
@@ -874,125 +1451,43 @@ export default function App() {
               padding: '16px 20px',
               marginBottom: 20
             }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   <span style={{ fontSize: 24 }}>☁</span>
                   <div>
                     <h2 style={{ fontSize: 17, fontWeight: 800, color: '#fff', margin: 0 }}>
-                      Sua Biblioteca na Nuvem (Firebase)
+                      Músicas Salvas na Nuvem
                     </h2>
                     <p style={{ fontSize: 12, color: '#00f0ff', margin: '2px 0 0' }}>
-                      ⚡ 0 MB ocupados no celular • Acessível de qualquer dispositivo
+                      ⚡ 0 MB ocupados no celular • Sincronizado pelo Firebase
                     </p>
                   </div>
                 </div>
                 <button
+                  className="pill-btn"
                   onClick={refreshCloud}
-                  style={{
-                    background: 'rgba(255,255,255,0.1)',
-                    border: 'none',
-                    color: '#fff',
-                    borderRadius: 8,
-                    padding: '6px 12px',
-                    fontSize: 12,
-                    cursor: 'pointer'
-                  }}
+                  disabled={loadingCloud}
                 >
                   {loadingCloud ? 'Atualizando…' : '🔄 Atualizar'}
                 </button>
               </div>
             </div>
 
-            {/* Cloud Playlists Section */}
-            {cloudPlaylists.length > 0 && (
-              <div style={{ marginBottom: 26 }}>
-                <h3 style={{ fontSize: 15, fontWeight: 700, color: '#e0aaff', marginBottom: 12 }}>
-                  Playlists Salvas na Nuvem ({cloudPlaylists.length})
-                </h3>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 12 }}>
-                  {cloudPlaylists.map(pl => (
-                    <div
-                      key={pl.id}
-                      style={{
-                        background: 'rgba(28, 18, 54, 0.7)',
-                        border: '1px solid rgba(157, 78, 221, 0.25)',
-                        borderRadius: 14,
-                        padding: 12,
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 12
-                      }}
-                    >
-                      <img
-                        src={pl.capa_playlist || placeholder}
-                        alt=""
-                        style={{ width: 56, height: 56, borderRadius: 10, objectFit: 'cover' }}
-                      />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <b style={{ display: 'block', fontSize: 13, color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                          {pl.nome_playlist}
-                        </b>
-                        <small style={{ color: '#9d8db8', fontSize: 11 }}>{pl.total_faixas} músicas • ☁ Nuvem</small>
-                        <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
-                          <button
-                            onClick={() => playCloudPlaylist(pl)}
-                            style={{
-                              background: '#7b2cbf',
-                              border: 'none',
-                              color: '#fff',
-                              borderRadius: 6,
-                              padding: '4px 10px',
-                              fontSize: 11,
-                              fontWeight: 700,
-                              cursor: 'pointer'
-                            }}
-                          >
-                            ▶ Tocar
-                          </button>
-                          <button
-                            onClick={async () => {
-                              await removePlaylistFromCloud(pl.id);
-                              await refreshCloud();
-                              showToast('Playlist removida da nuvem.');
-                            }}
-                            style={{
-                              background: 'transparent',
-                              border: 'none',
-                              color: '#ff4081',
-                              fontSize: 13,
-                              cursor: 'pointer'
-                            }}
-                            title="Excluir da Nuvem"
-                          >
-                            🗑
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Cloud Tracks Section */}
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
                 <h3 style={{ fontSize: 15, fontWeight: 700, color: '#e0aaff', margin: 0 }}>
-                  Músicas Salvas na Nuvem ({cloudTracks.length})
+                  Faixas Favoritas ({cloudTracks.length})
                 </h3>
               </div>
 
-              {cloudTracks.length === 0 && cloudPlaylists.length === 0 ? (
+              {cloudTracks.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '50px 20px', color: '#6d5d88', background: 'rgba(22,15,43,0.4)', borderRadius: 18, border: '1px dashed rgba(0,240,255,0.2)' }}>
                   <div style={{ fontSize: 40, marginBottom: 10 }}>☁</div>
-                  <p style={{ color: '#fff', fontWeight: 700, marginBottom: 4 }}>Sua Nuvem está vazia</p>
+                  <p style={{ color: '#fff', fontWeight: 700, marginBottom: 4 }}>Nenhuma música salva individualmente na Nuvem</p>
                   <p style={{ fontSize: 13, maxWidth: 360, margin: '0 auto 16px' }}>
-                    Toque no botão <b>☁ (Nuvem)</b> ao lado de qualquer música ou playlist para guardá-la na nuvem com <b>0 MB</b> de armazenamento usado no celular!
+                    Toque no botão <b>☁ (Nuvem)</b> ao lado de qualquer música na Fila ou no Player para guardá-la com <b>0 MB</b> no celular!
                   </p>
-                  <button
-                    className="btn-primary"
-                    onClick={() => setActiveTab('search')}
-                  >
+                  <button className="btn-primary" onClick={() => setActiveTab('search')}>
                     Buscar Músicas para Salvar
                   </button>
                 </div>
@@ -1011,7 +1506,23 @@ export default function App() {
                     </div>
                     <button
                       className="action-btn"
+                      title="Adicionar à Playlist na Nuvem"
+                      style={{ color: '#c77dff', fontWeight: 700 }}
+                      onClick={() => setTracksToAddToPlaylist([{
+                        nome_musica: item.nome_musica,
+                        nome_artista: item.nome_artista,
+                        album: item.album,
+                        capa: item.capa,
+                        videoId: item.videoId,
+                        duracao_ms: (item.duracao || 210) * 1000
+                      }])}
+                    >
+                      +♫
+                    </button>
+                    <button
+                      className="action-btn"
                       title="Excluir da Nuvem"
+                      style={{ color: '#ff4081' }}
                       onClick={async () => {
                         await removeTrackFromCloud(item.id);
                         await refreshCloud();
@@ -1031,60 +1542,6 @@ export default function App() {
                 ))
               )}
             </div>
-          </div>
-        )}
-
-        {/* Tab 4: Downloaded Tracks ("Ouça e Baixe") */}
-        {activeTab === 'downloads' && (
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <div>
-                <h2 style={{ fontSize: 18, fontWeight: 800, color: '#fff' }}>Músicas Baixadas (Offline)</h2>
-                <p style={{ fontSize: 12, color: '#00f0ff' }}>Tocam com a tela bloqueada e sem internet</p>
-              </div>
-              <span style={{ fontSize: 12, color: '#9d8db8' }}>{downloadedTracks.length} salvas</span>
-            </div>
-
-            {downloadedTracks.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '60px 20px', color: '#6d5d88', background: 'rgba(22,15,43,0.4)', borderRadius: 18, border: '1px dashed rgba(157,78,221,0.2)' }}>
-                <div style={{ fontSize: 36, marginBottom: 10 }}>📥</div>
-                <p style={{ color: '#fff', fontWeight: 700, marginBottom: 4 }}>Nenhuma música baixada ainda</p>
-                <p style={{ fontSize: 13 }}>Toque no ícone de download (📥) em qualquer música para salvar aqui.</p>
-              </div>
-            ) : (
-              downloadedTracks.map((item, i) => (
-                <div key={item.id} className="track-row">
-                  <span style={{ color: '#00f0ff', fontSize: 12, textAlign: 'center' }}>✔</span>
-                  <img src={item.capa || placeholder} alt="" />
-                  <div
-                    className="track-info-col"
-                    style={{ cursor: 'pointer' }}
-                    onClick={() => playOfflineTrack(item, i)}
-                  >
-                    <b>{item.nome_musica}</b>
-                    <small>{item.nome_artista} • Salva offline</small>
-                  </div>
-                  <button
-                    className="action-btn"
-                    title="Excluir download"
-                    onClick={async () => {
-                      await removeTrackOffline(item.id);
-                      await refreshDownloaded();
-                      showToast('Música removida das baixadas.');
-                    }}
-                  >
-                    🗑
-                  </button>
-                  <button
-                    className="action-btn"
-                    style={{ color: '#00f0ff' }}
-                    onClick={() => playOfflineTrack(item, i)}
-                  >
-                    ▶
-                  </button>
-                </div>
-              ))
-            )}
           </div>
         )}
       </main>
@@ -1143,24 +1600,182 @@ export default function App() {
             {current && (
               <>
                 <button
+                  style={{ color: '#c77dff', fontSize: 16 }}
+                  title="Adicionar à Playlist na Nuvem"
+                  onClick={() => setTracksToAddToPlaylist([current])}
+                >
+                  +♫
+                </button>
+                <button
                   style={{ color: '#00f0ff', fontSize: 16 }}
-                  title="Salvar na Nuvem (0 MB)"
+                  title="Salvar na Nuvem (0 MB no celular)"
                   onClick={() => handleSaveTrackToCloud(current)}
                 >
                   ☁
-                </button>
-                <button
-                  style={{ color: '#c77dff', fontSize: 16 }}
-                  title="Baixar MP3"
-                  onClick={() => downloadTrack(current)}
-                >
-                  📥
                 </button>
               </>
             )}
           </div>
         </div>
       </footer>
+
+      {/* Modal: Add Track(s) to Cloud Playlist */}
+      {tracksToAddToPlaylist && (
+        <div className="simple-modal-backdrop" onClick={() => setTracksToAddToPlaylist(null)}>
+          <div className="simple-modal-box" onClick={e => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <div>
+                <h3 style={{ fontSize: 17, fontWeight: 800, color: '#fff', margin: 0 }}>
+                  Adicionar à Playlist na Nuvem
+                </h3>
+                <small style={{ color: '#00f0ff', fontSize: 11 }}>☁ Armazenamento 100% na Nuvem (0 MB)</small>
+              </div>
+              <button
+                style={{ fontSize: 18, color: '#9d8db8' }}
+                onClick={() => setTracksToAddToPlaylist(null)}
+              >
+                ✕
+              </button>
+            </div>
+
+            <p style={{ fontSize: 13, color: '#e0aaff', marginBottom: 16 }}>
+              Adicionando {tracksToAddToPlaylist.length} música(s):
+            </p>
+
+            <div style={{ maxHeight: 240, overflowY: 'auto', marginBottom: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {cloudPlaylists.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '20px', color: '#9d8db8', fontSize: 13 }}>
+                  Você ainda não tem playlists na Nuvem. Crie uma abaixo!
+                </div>
+              ) : (
+                cloudPlaylists.map(pl => (
+                  <button
+                    key={pl.id}
+                    onClick={() => handleAddSelectedToCloudPlaylist(pl.id)}
+                    style={{
+                      background: 'rgba(38, 26, 71, 0.6)',
+                      border: '1px solid rgba(0, 240, 255, 0.25)',
+                      borderRadius: 12,
+                      padding: '10px 14px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      color: '#fff',
+                      textAlign: 'left'
+                    }}
+                  >
+                    <div>
+                      <b style={{ display: 'block', fontSize: 14 }}>{pl.nome_playlist}</b>
+                      <small style={{ color: '#00f0ff', fontSize: 11 }}>{pl.total_faixas} faixas • ☁ Nuvem</small>
+                    </div>
+                    <span style={{ color: '#00f0ff', fontSize: 13, fontWeight: 700 }}>+ Adicionar</span>
+                  </button>
+                ))
+              )}
+            </div>
+
+            <button
+              className="btn-primary"
+              style={{ width: '100%', justifyContent: 'center', padding: '10px 0' }}
+              onClick={() => {
+                setIsCreateModalOpen(true);
+              }}
+            >
+              + Criar Nova Playlist na Nuvem com estas músicas
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Create New Cloud Playlist */}
+      {isCreateModalOpen && (
+        <div className="simple-modal-backdrop" onClick={() => setIsCreateModalOpen(false)}>
+          <div className="simple-modal-box" onClick={e => e.stopPropagation()}>
+            <h3 style={{ fontSize: 18, fontWeight: 800, color: '#fff', marginBottom: 4 }}>
+              Nova Playlist na Nuvem
+            </h3>
+            <p style={{ fontSize: 12, color: '#00f0ff', marginBottom: 16 }}>
+              ☁ Salva 100% no Firebase • 0 MB de consumo de memória no celular.
+            </p>
+            <input
+              autoFocus
+              value={newPlaylistName}
+              onChange={e => setNewPlaylistName(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleCreateCloudPlaylist()}
+              placeholder="Ex: Treino, Festa, Melhores do Trap..."
+              style={{
+                width: '100%',
+                background: '#100a20',
+                border: '1px solid rgba(0, 240, 255, 0.4)',
+                borderRadius: 12,
+                padding: '12px 14px',
+                color: '#fff',
+                fontSize: 14,
+                marginBottom: 18,
+                outline: 'none'
+              }}
+            />
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button
+                className="pill-btn"
+                onClick={() => setIsCreateModalOpen(false)}
+              >
+                Cancelar
+              </button>
+              <button
+                className="btn-primary"
+                onClick={handleCreateCloudPlaylist}
+                disabled={!newPlaylistName.trim()}
+              >
+                Criar na Nuvem (0 MB)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Rename Cloud Playlist */}
+      {renameTarget && (
+        <div className="simple-modal-backdrop" onClick={() => setRenameTarget(null)}>
+          <div className="simple-modal-box" onClick={e => e.stopPropagation()}>
+            <h3 style={{ fontSize: 18, fontWeight: 800, color: '#fff', marginBottom: 6 }}>
+              Renomear Playlist na Nuvem
+            </h3>
+            <input
+              autoFocus
+              value={renameTarget.name}
+              onChange={e => setRenameTarget({ ...renameTarget, name: e.target.value })}
+              onKeyDown={e => e.key === 'Enter' && handleRenameCloudPlaylist()}
+              style={{
+                width: '100%',
+                background: '#100a20',
+                border: '1px solid rgba(0, 240, 255, 0.4)',
+                borderRadius: 12,
+                padding: '12px 14px',
+                color: '#fff',
+                fontSize: 14,
+                marginBottom: 18,
+                outline: 'none'
+              }}
+            />
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button
+                className="pill-btn"
+                onClick={() => setRenameTarget(null)}
+              >
+                Cancelar
+              </button>
+              <button
+                className="btn-primary"
+                onClick={handleRenameCloudPlaylist}
+                disabled={!renameTarget.name.trim()}
+              >
+                Salvar Nome na Nuvem
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Full Screen Glowing Player Modal */}
       {isModalOpen && (
@@ -1178,18 +1793,18 @@ export default function App() {
             </div>
             <div style={{ display: 'flex', gap: 12 }}>
               <button
+                style={{ fontSize: 20, color: '#c77dff' }}
+                title="Adicionar à Playlist na Nuvem"
+                onClick={() => current && setTracksToAddToPlaylist([current])}
+              >
+                +♫
+              </button>
+              <button
                 style={{ fontSize: 20, color: '#00f0ff' }}
                 title="Salvar na Nuvem (0 MB)"
                 onClick={() => current && handleSaveTrackToCloud(current)}
               >
                 ☁
-              </button>
-              <button
-                style={{ fontSize: 20, color: '#c77dff' }}
-                title="Baixar MP3"
-                onClick={() => current && downloadTrack(current)}
-              >
-                📥
               </button>
             </div>
           </div>

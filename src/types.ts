@@ -28,7 +28,17 @@ export interface PlaylistData {
 }
 
 export type PlaybackStatus = 'unstarted' | 'ended' | 'playing' | 'paused' | 'buffering' | 'cued' | 'error';
-export type AppTab = 'search' | 'queue' | 'cloud' | 'downloads';
+export type AppTab = 'search' | 'queue' | 'playlists' | 'cloud' | 'downloads';
+
+export interface CustomPlaylist {
+  id: string;
+  nome_playlist: string;
+  capa_playlist?: string;
+  total_faixas: number;
+  faixas: Track[];
+  createdAt: string;
+  updatedAt?: string;
+}
 
 export interface CloudTrackItem {
   id: string;
