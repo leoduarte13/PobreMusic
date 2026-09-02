@@ -1,0 +1,8 @@
+{
+  "name": "PobreMusic",
+  "description": "Player de música online e importador de playlists do Spotify com suporte a Netlify e Mobile",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

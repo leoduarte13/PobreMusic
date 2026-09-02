@@ -223,11 +223,13 @@ app.get('/api/public-playlist', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Access-Control-Allow-Origin', '*');
   const rawUrl = String(req.query.url || '').trim();
-  const m = rawUrl.match(/(?:spotify\.com\/[^/]+\/)?(playlist|album|track)\/([A-Za-z0-9]+)/i) || rawUrl.match(/spotify:(playlist|album|track):([A-Za-z0-9]+)/i);
+  const m = rawUrl.match(/(?:spotify\.com\/(?:intl-[^/]+\/)?|spotify:)(playlist|album|track)[/:]([A-Za-z0-9]+)/i);
   const type = m ? m[1].toLowerCase() : 'playlist';
   const id = m ? m[2] : rawUrl.split('?')[0].split('/').pop()?.replace(/[^A-Za-z0-9]/g, '') || '';
 
-  if (!id || id.length < 10) return res.status(400).json({ sucesso: false, error: 'Link Spotify inválido.' });
+  if (!id || id.length < 10) {
+    return res.status(400).json({ sucesso: false, error: 'Link do Spotify inválido. Cole o link de uma playlist, álbum ou música.' });
+  }
 
   try {
     const embedUrl = `https://open.spotify.com/embed/${type}/${id}?utm_source=generator&theme=0`;
@@ -239,10 +241,11 @@ app.get('/api/public-playlist', async (req, res) => {
     });
 
     const html = await embedRes.text();
-    const jsonMatch = html.match(/<script[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
     let entity: any = null;
     let trackList: any[] = [];
 
+    // Method 1: __NEXT_DATA__
+    const jsonMatch = html.match(/<script[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
     if (jsonMatch) {
       try {
         const nextData = JSON.parse(jsonMatch[1]);
@@ -254,6 +257,26 @@ app.get('/api/public-playlist', async (req, res) => {
       } catch {}
     }
 
+    // Method 2: initial-state (Base64 / JSON)
+    if (!trackList.length) {
+      const initialStateMatch = html.match(/<script[^>]*id=["']initial-state["'][^>]*>([\s\S]*?)<\/script>/i);
+      if (initialStateMatch) {
+        try {
+          let content = initialStateMatch[1].trim();
+          if (!content.startsWith('{')) {
+            content = Buffer.from(content, 'base64').toString('utf-8');
+          }
+          const state = JSON.parse(content);
+          const entityData = state?.data?.entity || state?.entity;
+          if (entityData) {
+            entity = entityData;
+            trackList = entityData.trackList || entityData.tracks?.items || [];
+          }
+        } catch {}
+      }
+    }
+
+    // Method 3: Regex trackList
     if (!trackList.length) {
       const regexMatch = html.match(/"trackList"\s*:\s*(\[[^\]]+\])/);
       if (regexMatch) {
@@ -261,7 +284,7 @@ app.get('/api/public-playlist', async (req, res) => {
       }
     }
 
-    const playlistName = entity?.name || entity?.title || 'Playlist do Spotify';
+    const playlistName = entity?.name || entity?.title || (type === 'album' ? 'Álbum do Spotify' : 'Playlist do Spotify');
     const coverUrl = entity?.coverArt?.sources?.[0]?.url || entity?.images?.[0]?.url || '';
 
     const faixas = trackList.map(item => {
@@ -282,15 +305,48 @@ app.get('/api/public-playlist', async (req, res) => {
       };
     }).filter(Boolean);
 
-    return res.json({
-      sucesso: true,
-      nome_playlist: playlistName,
-      capa_playlist: coverUrl || faixas[0]?.capa || '',
-      total_faixas: faixas.length,
-      faixas
+    if (faixas.length > 0) {
+      return res.json({
+        sucesso: true,
+        nome_playlist: playlistName,
+        capa_playlist: coverUrl || faixas[0]?.capa || '',
+        total_faixas: faixas.length,
+        faixas
+      });
+    }
+
+    // Method 4: oEmbed Fallback
+    try {
+      const oembedRes = await fetch(`https://open.spotify.com/oembed?url=${encodeURIComponent(rawUrl)}`);
+      if (oembedRes.ok) {
+        const oembedData: any = await oembedRes.json();
+        const title = String(oembedData.title || 'Playlist do Spotify');
+        return res.json({
+          sucesso: true,
+          nome_playlist: title,
+          capa_playlist: oembedData.thumbnail_url || '',
+          total_faixas: 1,
+          faixas: [{
+            nome_musica: title,
+            nome_artista: oembedData.author_name || 'Spotify',
+            album: title,
+            duracao_ms: 180000,
+            capa: oembedData.thumbnail_url || '',
+            spotify_id: id
+          }]
+        });
+      }
+    } catch {}
+
+    return res.status(404).json({
+      sucesso: false,
+      error: 'Nenhuma música encontrada nesta playlist. Verifique se o link é público.'
     });
   } catch (e: any) {
-    return res.status(502).json({ sucesso: false, error: 'Erro ao consultar Spotify: ' + String(e?.message || e) });
+    return res.status(502).json({
+      sucesso: false,
+      error: 'Erro ao consultar Spotify: ' + String(e?.message || e)
+    });
   }
 });
 

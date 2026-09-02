@@ -1,0 +1,6 @@
+/api/search /.netlify/functions/search 200
+/api/public-playlist /.netlify/functions/public-playlist 200
+/api/health /.netlify/functions/health 200
+/api/audio /.netlify/functions/audio 200
+/api/* /.netlify/functions/:splat 200
+/* /index.html 200

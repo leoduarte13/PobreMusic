@@ -17,6 +17,7 @@ import {
 } from './lib/cloudStorage';
 import { testFirebaseConnection } from './firebase';
 import { startBackgroundAudioKeeper, pauseBackgroundAudioKeeper, requestScreenWakeLock } from './lib/backgroundKeeper';
+import { parseSpotifyDetails, safeFetchJson, extractSpotifyDirectly } from './lib/spotifyResolver';
 import './index.css';
 
 const placeholder = 'https://placehold.co/120x120/1f1638/00f0ff?text=♫';
@@ -29,12 +30,6 @@ const formatTime = (seconds: number) => {
 
 const getApiBase = () => {
   return '';
-};
-
-const parseSpotifyId = (input: string) => {
-  const value = input.trim();
-  const m = value.match(/spotify\.com\/(?:intl-[^/]+\/)?(playlist|album|track)\/([A-Za-z0-9]+)/i) || value.match(/spotify:(playlist|album|track):([A-Za-z0-9]+)/i);
-  return m?.[2] || '';
 };
 
 export default function App() {
@@ -419,14 +414,34 @@ export default function App() {
     setLoading(true);
     setProgress(0);
 
-    const spotifyId = parseSpotifyId(val);
+    const spotifyDetails = parseSpotifyDetails(val);
 
-    if (spotifyId) {
-      // Import Spotify Playlist
+    if (spotifyDetails.id) {
+      // Import Spotify Playlist / Album / Track
       try {
-        const response = await fetch(`${getApiBase()}/api/public-playlist?url=${encodeURIComponent(val)}`, { cache: 'no-store' });
-        const data: PlaylistData = await response.json();
-        if (!response.ok || !data.sucesso) throw new Error(data.error || 'Não foi possível carregar a playlist.');
+        let data: PlaylistData | null = null;
+
+        // Step 1: Try server endpoint with safe JSON parser
+        try {
+          const response = await fetch(`${getApiBase()}/api/public-playlist?url=${encodeURIComponent(val)}`, {
+            cache: 'no-store'
+          });
+          if (response.ok) {
+            data = await safeFetchJson<PlaylistData>(response);
+          }
+        } catch (serverErr) {
+          console.warn('Endpoint /api/public-playlist indisponível ou em fallback:', serverErr);
+        }
+
+        // Step 2: Fallback to direct client-side extraction if server didn't provide playlist
+        if (!data || !data.sucesso || !data.faixas || data.faixas.length === 0) {
+          data = await extractSpotifyDirectly(val);
+        }
+
+        if (!data || !data.faixas || data.faixas.length === 0) {
+          throw new Error('Nenhuma faixa encontrada no link fornecido. Verifique se a playlist é pública no Spotify.');
+        }
+
         setPlaylist(data);
 
         const base = data.faixas || [];
@@ -437,7 +452,7 @@ export default function App() {
           await Promise.all(batch.map(async (track, j) => {
             try {
               const r = await fetch(`${getApiBase()}/api/search?nome_musica=${encodeURIComponent(track.nome_musica)}&nome_artista=${encodeURIComponent(track.nome_artista)}`, { cache: 'no-store' });
-              const result = await r.json();
+              const result = await safeFetchJson(r);
               resolved[i + j] = r.ok && result.videoId
                 ? { ...track, videoId: result.videoId, videoTitle: result.titulo, hasError: false }
                 : { ...track, hasError: true };
@@ -456,7 +471,7 @@ export default function App() {
         if (first >= 0) playIndex(first);
         showToast('Playlist importada com sucesso!');
       } catch (e: any) {
-        setError(e?.message || 'Erro ao importar playlist.');
+        setError(e?.message || 'Não foi possível carregar a playlist. Verifique se o link é público.');
       } finally {
         setLoading(false);
       }
@@ -464,8 +479,8 @@ export default function App() {
       // Single Track Search
       try {
         const r = await fetch(`${getApiBase()}/api/search?nome_musica=${encodeURIComponent(val)}`, { cache: 'no-store' });
-        const result = await r.json();
-        if (!r.ok || !result.videoId) throw new Error(result.error || 'Música não encontrada.');
+        const result = await safeFetchJson(r);
+        if (!r.ok || !result.videoId) throw new Error(result?.error || 'Música não encontrada.');
 
         const newTrack: Track = {
           nome_musica: result.titulo || val,
