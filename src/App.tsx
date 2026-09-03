@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PlaylistData, Track, PlaybackStatus, AppTab, CloudTrackItem, CloudPlaylistItem } from './types';
 import { loadYouTubeAPI } from './lib/youtubePlayer';
 import {
@@ -12,10 +12,20 @@ import {
   removeMultipleTracksFromCloudPlaylist,
   renameCloudPlaylist,
   deleteCloudPlaylist,
-  savePlaylistToCloud
+  savePlaylistToCloud,
+  cleanTrackForFirestore,
+  getTrackUniqueKey,
+  saveSessionState,
+  loadSessionState
 } from './lib/cloudStorage';
 import { testFirebaseConnection } from './firebase';
-import { startBackgroundAudioKeeper, pauseBackgroundAudioKeeper, requestScreenWakeLock } from './lib/backgroundKeeper';
+import {
+  startBackgroundAudioKeeper,
+  pauseBackgroundAudioKeeper,
+  requestScreenWakeLock,
+  releaseScreenWakeLock,
+  toggleScreenWakeLock
+} from './lib/backgroundKeeper';
 import { safeFetchJson, extractSpotifyDirectly } from './lib/spotifyResolver';
 import { detectInputType, resolveYouTubeVideo, resolveYouTubePlaylist } from './lib/universalLinkResolver';
 import './index.css';
@@ -39,7 +49,7 @@ export default function App() {
   const [error, setError] = useState('');
   const [notification, setNotification] = useState('');
 
-  // Queue & Track Lists (Transient runtime state, 0 MB on disk)
+  // Queue & Track Lists (Spotify-like persistence & 100% Cloud Library)
   const [playlist, setPlaylist] = useState<PlaylistData | null>(null);
   const [tracks, setTracks] = useState<Track[]>([]);
   const [cloudTracks, setCloudTracks] = useState<CloudTrackItem[]>([]);
@@ -47,6 +57,7 @@ export default function App() {
   const [selectedCloudPlaylistId, setSelectedCloudPlaylistId] = useState<string | null>(null);
   const [loadingCloud, setLoadingCloud] = useState(false);
   const [index, setIndex] = useState<number | null>(null);
+  const [isWakeLockOn, setIsWakeLockOn] = useState(false);
 
   // Multi-Selection State
   const [isSelectionMode, setIsSelectionMode] = useState(false);
@@ -68,7 +79,8 @@ export default function App() {
   const [repeat, setRepeat] = useState<'off' | 'all' | 'one'>('all');
   const [isModalOpen, setIsModalOpen] = useState(false);
 
-  // Audio Engine Refs
+  // User Play Intent & Audio Engine Refs
+  const userWantsPlayRef = useRef(false);
   const ytPlayerRef = useRef<any>(null);
   const isYtReadyRef = useRef(false);
   const nativeAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -85,6 +97,11 @@ export default function App() {
   useEffect(() => { indexRef.current = index; }, [index]);
   useEffect(() => { shuffleRef.current = shuffle; }, [shuffle]);
   useEffect(() => { repeatRef.current = repeat; }, [repeat]);
+
+  // Fast set lookup for saved tracks in the cloud library
+  const savedTrackKeys = useMemo(() => {
+    return new Set(cloudTracks.map(t => getTrackUniqueKey(t)));
+  }, [cloudTracks]);
 
   // Load Cloud saved tracks & playlists from Firebase Firestore (0 MB on phone)
   const refreshCloud = useCallback(async () => {
@@ -103,10 +120,28 @@ export default function App() {
     }
   }, []);
 
+  // Restore session from cache so page refresh (F5) restores active playlist and queue immediately
   useEffect(() => {
+    const session = loadSessionState();
+    if (session && session.tracks && session.tracks.length > 0) {
+      setTracks(session.tracks);
+      if (session.playlist) setPlaylist(session.playlist);
+      if (session.index !== null && session.index >= 0 && session.index < session.tracks.length) {
+        setIndex(session.index);
+      }
+      if (session.time) setTime(session.time);
+      setActiveTab('queue');
+    }
     refreshCloud();
     testFirebaseConnection();
   }, [refreshCloud]);
+
+  // Auto-sync session state whenever tracks or current track change
+  useEffect(() => {
+    if (tracks.length > 0) {
+      saveSessionState({ playlist, tracks, index, time });
+    }
+  }, [tracks, playlist, index, time]);
 
   // Toast notification helper
   const showToast = (msg: string) => {
@@ -194,14 +229,18 @@ export default function App() {
 
     audio.onplay = () => {
       setStatus('playing');
+      userWantsPlayRef.current = true;
       startBackgroundAudioKeeper();
-      requestScreenWakeLock();
+      requestScreenWakeLock().then(on => setIsWakeLockOn(on));
       try { navigator.mediaSession.playbackState = 'playing'; } catch {}
     };
     audio.onpause = () => {
-      setStatus('paused');
-      pauseBackgroundAudioKeeper();
-      try { navigator.mediaSession.playbackState = 'paused'; } catch {}
+      if (!userWantsPlayRef.current) {
+        setStatus('paused');
+        pauseBackgroundAudioKeeper();
+        setIsWakeLockOn(false);
+        try { navigator.mediaSession.playbackState = 'paused'; } catch {}
+      }
     };
     audio.onended = () => {
       nextTrack();
@@ -244,14 +283,30 @@ export default function App() {
             onStateChange: (event: any) => {
               if (activeAudioSourceRef.current !== 'yt') return;
               if (event.data === 1) {
+                // 1 = PLAYING
                 setStatus('playing');
+                userWantsPlayRef.current = true;
                 startBackgroundAudioKeeper();
-                requestScreenWakeLock();
+                requestScreenWakeLock().then(on => setIsWakeLockOn(on));
                 try { navigator.mediaSession.playbackState = 'playing'; } catch {}
               } else if (event.data === 2) {
-                setStatus('paused');
-                pauseBackgroundAudioKeeper();
-                try { navigator.mediaSession.playbackState = 'paused'; } catch {}
+                // 2 = PAUSED
+                // Check if pause was caused by backgrounding or OS screen lock
+                const isHidden = typeof document !== 'undefined' && (document.visibilityState === 'hidden' || !document.hasFocus());
+                if (userWantsPlayRef.current && isHidden) {
+                  // Phone screen locked or tab backgrounded: keep audio keeper alive!
+                  startBackgroundAudioKeeper();
+                  setTimeout(() => {
+                    if (userWantsPlayRef.current && ytPlayerRef.current?.playVideo) {
+                      ytPlayerRef.current.playVideo();
+                    }
+                  }, 250);
+                } else if (!userWantsPlayRef.current) {
+                  setStatus('paused');
+                  pauseBackgroundAudioKeeper();
+                  setIsWakeLockOn(false);
+                  try { navigator.mediaSession.playbackState = 'paused'; } catch {}
+                }
               } else if (event.data === 0) {
                 nextTrack();
               } else if (event.data === 3) {
@@ -297,6 +352,10 @@ export default function App() {
     if (i < 0 || i >= list.length) return;
     const track = list[i];
     if (!track) return;
+
+    userWantsPlayRef.current = true;
+    startBackgroundAudioKeeper();
+    requestScreenWakeLock().then(on => setIsWakeLockOn(on));
 
     setIndex(i);
     setMetadata(track);
@@ -374,6 +433,9 @@ export default function App() {
     };
 
     safe('play', () => {
+      userWantsPlayRef.current = true;
+      startBackgroundAudioKeeper();
+      requestScreenWakeLock().then(on => setIsWakeLockOn(on));
       if (activeAudioSourceRef.current === 'native' && nativeAudioRef.current) {
         nativeAudioRef.current.play();
       } else if (ytPlayerRef.current?.playVideo) {
@@ -383,6 +445,9 @@ export default function App() {
       }
     });
     safe('pause', () => {
+      userWantsPlayRef.current = false;
+      pauseBackgroundAudioKeeper();
+      setIsWakeLockOn(false);
       if (activeAudioSourceRef.current === 'native' && nativeAudioRef.current) {
         nativeAudioRef.current.pause();
       } else {
@@ -418,12 +483,30 @@ export default function App() {
     }
 
     if (activeAudioSourceRef.current === 'native' && nativeAudioRef.current) {
-      if (status === 'playing') nativeAudioRef.current.pause();
-      else nativeAudioRef.current.play();
+      if (status === 'playing') {
+        userWantsPlayRef.current = false;
+        nativeAudioRef.current.pause();
+        pauseBackgroundAudioKeeper();
+        setIsWakeLockOn(false);
+      } else {
+        userWantsPlayRef.current = true;
+        startBackgroundAudioKeeper();
+        requestScreenWakeLock().then(on => setIsWakeLockOn(on));
+        nativeAudioRef.current.play();
+      }
     } else {
       const p = ytPlayerRef.current;
-      if (status === 'playing') p?.pauseVideo?.();
-      else p?.playVideo?.();
+      if (status === 'playing') {
+        userWantsPlayRef.current = false;
+        pauseBackgroundAudioKeeper();
+        setIsWakeLockOn(false);
+        p?.pauseVideo?.();
+      } else {
+        userWantsPlayRef.current = true;
+        startBackgroundAudioKeeper();
+        requestScreenWakeLock().then(on => setIsWakeLockOn(on));
+        p?.playVideo?.();
+      }
     }
   };
 
@@ -495,7 +578,20 @@ export default function App() {
         setPlaylist(ytPlaylistData);
         setTracks(ytPlaylistData.faixas);
         setActiveTab('queue');
-        showToast(`Playlist "${ytPlaylistData.nome_playlist}" carregada! Toque em ▶ Tocar quando quiser.`);
+
+        // Auto-save to Cloud Firestore (0 MB no celular, persistido na nuvem)
+        try {
+          const savedPl = await savePlaylistToCloud(ytPlaylistData);
+          setCloudPlaylists(prev => [savedPl, ...prev.filter(p => p.id !== savedPl.id)]);
+          refreshCloud();
+        } catch (saveErr) {
+          console.warn('Erro ao auto-salvar playlist na nuvem:', saveErr);
+        }
+
+        // Auto-save to session state (persistente contra F5 / recarregar página)
+        saveSessionState({ playlist: ytPlaylistData, tracks: ytPlaylistData.faixas, index: null });
+
+        showToast(`✔ Playlist "${ytPlaylistData.nome_playlist}" salva na Nuvem! Toque em ▶ Tocar quando desejar.`);
       } catch (e: any) {
         setError(e?.message || 'Não foi possível carregar a playlist do YouTube. Verifique se é pública.');
       } finally {
@@ -533,6 +629,22 @@ export default function App() {
         setPlaylist(data);
 
         const base = data.faixas || [];
+        setTracks(base);
+        setActiveTab('queue');
+
+        // Auto-save immediately to Cloud Firestore (0 MB no celular, igual ao Spotify!)
+        try {
+          const savedPl = await savePlaylistToCloud(data);
+          setCloudPlaylists(prev => [savedPl, ...prev.filter(p => p.id !== savedPl.id)]);
+          refreshCloud();
+          showToast(`☁ "${data.nome_playlist}" salva na Nuvem (0 MB no celular)!`);
+        } catch (saveErr) {
+          console.warn('Erro ao auto-salvar playlist:', saveErr);
+        }
+
+        // Auto-save to session state (permanece ao recarregar a página)
+        saveSessionState({ playlist: data, tracks: base, index: null });
+
         const resolved = [...base];
         let done = 0;
         for (let i = 0; i < resolved.length; i += 4) {
@@ -552,10 +664,18 @@ export default function App() {
             }
           }));
           setTracks([...resolved]);
+          saveSessionState({ playlist: data, tracks: resolved, index: indexRef.current });
         }
         setTracks(resolved);
-        setActiveTab('queue');
-        showToast('Playlist importada com sucesso! Toque em ▶ Tocar para iniciar quando desejar.');
+        saveSessionState({ playlist: data, tracks: resolved, index: indexRef.current });
+
+        // Update Cloud Firestore playlist document with resolved videoIds
+        try {
+          await savePlaylistToCloud({ ...data, faixas: resolved });
+          refreshCloud();
+        } catch {}
+
+        showToast('Playlist pronta para ouvir! Toque em ▶ Tocar para iniciar quando desejar.');
       } catch (e: any) {
         setError(e?.message || 'Não foi possível carregar a playlist. Verifique se o link é público.');
       } finally {
@@ -730,32 +850,79 @@ export default function App() {
     }
   };
 
-  // Cloud persistence helper
-  const handleSaveTrackToCloud = async (track: Track) => {
-    if (!track.videoId && !track.nome_musica) return;
+  // Cloud persistence helper (100% Firebase Firestore • 0 MB no celular)
+  const handleSaveTrackToCloud = async (rawTrack: Track) => {
+    const track = cleanTrackForFirestore(rawTrack);
+    if (!track.nome_musica) return;
+
+    const trackKey = getTrackUniqueKey(track);
+    const isAlreadySaved = savedTrackKeys.has(trackKey);
+
+    if (isAlreadySaved) {
+      const existing = cloudTracks.find(t => getTrackUniqueKey(t) === trackKey);
+      if (existing) {
+        showToast(`Removendo "${track.nome_musica}" da Nuvem...`);
+        try {
+          await removeTrackFromCloud(existing.id);
+          setCloudTracks(prev => prev.filter(t => t.id !== existing.id));
+          showToast(`Removida da Nuvem: "${track.nome_musica}"`);
+        } catch {
+          showToast('Erro ao remover da nuvem.');
+        }
+        return;
+      }
+    }
+
     try {
       showToast(`☁ Salvando "${track.nome_musica}" na Nuvem (0 MB)...`);
-      await saveTrackToCloud(track);
-      await refreshCloud();
+      // Optimistic instant badge update
+      const tempItem: CloudTrackItem = {
+        id: `trk_${Date.now()}`,
+        nome_musica: track.nome_musica,
+        nome_artista: track.nome_artista,
+        album: track.album || '',
+        capa: track.capa || '',
+        videoId: track.videoId || '',
+        duracao: track.duracao_ms ? Math.round(track.duracao_ms / 1000) : 210,
+        createdAt: new Date().toISOString()
+      };
+      setCloudTracks(prev => [tempItem, ...prev.filter(t => getTrackUniqueKey(t) !== trackKey)]);
+
+      const saved = await saveTrackToCloud(track);
+      setCloudTracks(prev => [saved, ...prev.filter(t => t.id !== tempItem.id && getTrackUniqueKey(t) !== trackKey)]);
       showToast(`✔ "${track.nome_musica}" salva na Nuvem (0 MB no celular)!`);
     } catch (e: any) {
+      console.error('Erro ao salvar na nuvem:', e);
+      await refreshCloud();
       showToast(e?.message || 'Erro ao salvar na nuvem.');
     }
   };
 
   const handleSavePlaylistToCloud = async (plDataOverride?: PlaylistData) => {
     const plToSave = plDataOverride || (playlist ? { ...playlist, faixas: tracks } : null);
-    if (!plToSave || !plToSave.faixas.length) {
+    if (!plToSave || !plToSave.faixas || !plToSave.faixas.length) {
       showToast('Nenhuma playlist ativa para salvar.');
       return;
     }
     try {
       showToast(`☁ Salvando "${plToSave.nome_playlist}" na Nuvem (0 MB)...`);
-      await savePlaylistToCloud(plToSave);
-      await refreshCloud();
+      const saved = await savePlaylistToCloud(plToSave);
+      setCloudPlaylists(prev => [saved, ...prev.filter(p => p.id !== saved.id)]);
+      refreshCloud();
       showToast(`✔ "${plToSave.nome_playlist}" salva na Nuvem (0 MB no celular)!`);
     } catch (e: any) {
+      console.error('Erro ao salvar playlist:', e);
       showToast(e?.message || 'Erro ao salvar playlist na nuvem.');
+    }
+  };
+
+  const handleToggleWakeLock = async () => {
+    const active = await toggleScreenWakeLock();
+    setIsWakeLockOn(active);
+    if (active) {
+      showToast('🔒 Modo Segundo Plano ATIVO: A tela não desligará e o áudio continuará.');
+    } else {
+      showToast('Modo Segundo Plano desativado.');
     }
   };
 
@@ -811,7 +978,7 @@ export default function App() {
               <div className="brand-icon-inner">P</div>
             </div>
             <div>
-              <div className="brand-title">Probe Music</div>
+              <div className="brand-title">PobreMusic</div>
               <div className="brand-sub" style={{ color: '#00f0ff' }}>☁ 100% Na Nuvem • 0 MB no Celular</div>
             </div>
           </div>
@@ -840,6 +1007,19 @@ export default function App() {
               onClick={() => { setActiveTab('cloud_tracks'); refreshCloud(); setSelectedCloudPlaylistId(null); setIsSelectionMode(false); }}
             >
               ☁ Músicas ({cloudTracks.length})
+            </button>
+            <button
+              className="tab-btn"
+              style={{
+                borderColor: isWakeLockOn ? '#00f0ff' : 'rgba(0, 240, 255, 0.3)',
+                background: isWakeLockOn ? 'rgba(0, 240, 255, 0.18)' : 'transparent',
+                color: isWakeLockOn ? '#00f0ff' : '#9d8db8',
+                fontWeight: 700
+              }}
+              onClick={handleToggleWakeLock}
+              title="Modo Segundo Plano: Mantém a tela acordada e o áudio tocando no celular"
+            >
+              {isWakeLockOn ? '🔒 2º Plano: Ligado' : '📱 2º Plano'}
             </button>
           </div>
         </div>
@@ -968,7 +1148,7 @@ export default function App() {
                 <img src={playlist.capa_playlist || placeholder} alt="" />
                 <div className="playlist-info">
                   <h2>{playlist.nome_playlist}</h2>
-                  <p>{playlist.total_faixas} músicas carregadas</p>
+                  <p>{playlist.total_faixas} músicas carregadas • ☁ Sincronizada na Nuvem (0 MB)</p>
                   <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 10 }}>
                     <button
                       className="btn-primary"
@@ -999,6 +1179,41 @@ export default function App() {
                 </div>
               </div>
             )}
+
+            {/* Background Audio Mode Notice / Quick Toggle */}
+            <div style={{
+              background: 'rgba(38, 26, 71, 0.55)',
+              border: isWakeLockOn ? '1px solid rgba(0, 240, 255, 0.45)' : '1px solid rgba(157, 78, 221, 0.25)',
+              borderRadius: 14,
+              padding: '10px 14px',
+              marginBottom: 14,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 12,
+              flexWrap: 'wrap'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 20 }}>{isWakeLockOn ? '🔒' : '📱'}</span>
+                <div>
+                  <b style={{ fontSize: 13, color: isWakeLockOn ? '#00f0ff' : '#fff' }}>
+                    {isWakeLockOn ? 'Modo Segundo Plano: Ativo (Tela acordada)' : 'Música em Segundo Plano'}
+                  </b>
+                  <p style={{ margin: 0, fontSize: 11, color: '#9d8db8' }}>
+                    {isWakeLockOn
+                      ? 'O celular não desligará a tela e o pipeline de áudio está protegido.'
+                      : 'Ative para evitar que celulares Android/iOS pausem o som ao apagar a tela.'}
+                  </p>
+                </div>
+              </div>
+              <button
+                className={`pill-btn ${isWakeLockOn ? 'primary' : ''}`}
+                style={{ fontSize: 11, padding: '5px 12px' }}
+                onClick={handleToggleWakeLock}
+              >
+                {isWakeLockOn ? '✔ Tela Ativa' : 'Manter Tela Ativa'}
+              </button>
+            </div>
 
             {/* Queue Header & Multi-Selection Toggle */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
@@ -1123,14 +1338,22 @@ export default function App() {
                     </button>
 
                     {/* Save to Cloud Library */}
-                    <button
-                      className="action-btn"
-                      title="Salvar na Nuvem (0 MB no celular)"
-                      style={{ color: '#00f0ff' }}
-                      onClick={() => handleSaveTrackToCloud(track)}
-                    >
-                      ☁
-                    </button>
+                    {(() => {
+                      const isSaved = savedTrackKeys.has(getTrackUniqueKey(track));
+                      return (
+                        <button
+                          className="action-btn"
+                          title={isSaved ? "Música salva na Nuvem (0 MB) - Toque para remover" : "Salvar na Nuvem (0 MB no celular)"}
+                          style={{
+                            color: isSaved ? '#00f0ff' : '#6d5d88',
+                            textShadow: isSaved ? '0 0 10px rgba(0, 240, 255, 0.7)' : 'none'
+                          }}
+                          onClick={() => handleSaveTrackToCloud(track)}
+                        >
+                          {isSaved ? '☁✔' : '☁'}
+                        </button>
+                      );
+                    })()}
 
                     <button
                       className="action-btn"
@@ -1606,13 +1829,22 @@ export default function App() {
                 >
                   +♫
                 </button>
-                <button
-                  style={{ color: '#00f0ff', fontSize: 16 }}
-                  title="Salvar na Nuvem (0 MB no celular)"
-                  onClick={() => handleSaveTrackToCloud(current)}
-                >
-                  ☁
-                </button>
+                {(() => {
+                  const isSaved = savedTrackKeys.has(getTrackUniqueKey(current));
+                  return (
+                    <button
+                      style={{
+                        color: isSaved ? '#00f0ff' : '#6d5d88',
+                        fontSize: 16,
+                        textShadow: isSaved ? '0 0 10px rgba(0, 240, 255, 0.7)' : 'none'
+                      }}
+                      title={isSaved ? "Música salva na Nuvem (0 MB) - Toque para remover" : "Salvar na Nuvem (0 MB no celular)"}
+                      onClick={() => handleSaveTrackToCloud(current)}
+                    >
+                      {isSaved ? '☁✔' : '☁'}
+                    </button>
+                  );
+                })()}
               </>
             )}
           </div>
@@ -1789,7 +2021,7 @@ export default function App() {
             </button>
             <div style={{ textAlign: 'center' }}>
               <small style={{ color: '#00f0ff', fontSize: 11, fontWeight: 700 }}>TOCANDO AGORA</small>
-              <div style={{ color: '#fff', fontSize: 13, fontWeight: 600 }}>{playlist?.nome_playlist || 'Probe Music'}</div>
+              <div style={{ color: '#fff', fontSize: 13, fontWeight: 600 }}>{playlist?.nome_playlist || 'PobreMusic'}</div>
             </div>
             <div style={{ display: 'flex', gap: 12 }}>
               <button
@@ -1799,13 +2031,22 @@ export default function App() {
               >
                 +♫
               </button>
-              <button
-                style={{ fontSize: 20, color: '#00f0ff' }}
-                title="Salvar na Nuvem (0 MB)"
-                onClick={() => current && handleSaveTrackToCloud(current)}
-              >
-                ☁
-              </button>
+              {(() => {
+                const isSaved = current ? savedTrackKeys.has(getTrackUniqueKey(current)) : false;
+                return (
+                  <button
+                    style={{
+                      fontSize: 20,
+                      color: isSaved ? '#00f0ff' : '#9d8db8',
+                      textShadow: isSaved ? '0 0 10px rgba(0, 240, 255, 0.7)' : 'none'
+                    }}
+                    title={isSaved ? "Música salva na Nuvem (0 MB) - Toque para remover" : "Salvar na Nuvem (0 MB)"}
+                    onClick={() => current && handleSaveTrackToCloud(current)}
+                  >
+                    {isSaved ? '☁✔' : '☁'}
+                  </button>
+                );
+              })()}
             </div>
           </div>
 
@@ -1819,7 +2060,7 @@ export default function App() {
               {current?.nome_musica || 'Nenhuma música'}
             </h2>
             <p style={{ fontSize: 14, color: '#9d8db8' }}>
-              {current?.nome_artista || 'Probe Music Player'}
+              {current?.nome_artista || 'PobreMusic Player'}
             </p>
           </div>
 
@@ -1881,6 +2122,23 @@ export default function App() {
               }}
             />
             <span>🔊</span>
+          </div>
+
+          {/* Background Audio Mode inside Player */}
+          <div style={{ marginTop: 24, textAlign: 'center' }}>
+            <button
+              className="pill-btn"
+              style={{
+                fontSize: 12,
+                borderColor: isWakeLockOn ? '#00f0ff' : 'rgba(0, 240, 255, 0.3)',
+                background: isWakeLockOn ? 'rgba(0, 240, 255, 0.15)' : 'transparent',
+                color: isWakeLockOn ? '#00f0ff' : '#9d8db8',
+                padding: '6px 16px'
+              }}
+              onClick={handleToggleWakeLock}
+            >
+              {isWakeLockOn ? '🔒 Modo Segundo Plano ATIVO (Tela não apaga)' : '📱 Ativar Segundo Plano (Manter Tela Ativa)'}
+            </button>
           </div>
         </div>
       )}
