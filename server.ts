@@ -162,16 +162,23 @@ interface FullTrackAudioResult {
   source: 'soundcloud' | 'audius';
 }
 
+// In-memory cache for resolved full audio streams (fast response < 5ms)
+const fullAudioCache = new Map<string, FullTrackAudioResult>();
+
 async function searchFullTrackAudio(title: string, artist: string): Promise<FullTrackAudioResult | null> {
   const cleanTitle = title.replace(/\(.*?\)/g, '').replace(/\[.*?\]/g, '').trim();
   const cleanArtist = artist.replace(/feat\..*$/i, '').trim();
   const q = `${cleanTitle} ${cleanArtist}`.trim();
+  const cacheKey = q.toLowerCase();
 
-  // 1. Search SoundCloud for FULL TRACK (must be >= 60 seconds)
+  const cached = fullAudioCache.get(cacheKey);
+  if (cached) return cached;
+
+  // 1. Search SoundCloud for FULL TRACK (must be >= 60 seconds and progressive MP3)
   try {
     const clientId = await getSoundCloudClientId();
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 4500);
+    const timeout = setTimeout(() => controller.abort(), 4000);
     const searchUrl = `https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(q)}&client_id=${clientId}&limit=12`;
     const res = await fetch(searchUrl, {
       headers: { 'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0' },
@@ -182,36 +189,47 @@ async function searchFullTrackAudio(title: string, artist: string): Promise<Full
     if (res.ok) {
       const data: any = await res.json();
       const tracks = Array.isArray(data.collection) ? data.collection : [];
-      for (const t of tracks) {
-        // Enforce FULL track: minimum 60s duration (filters out 30s previews and snippet samples!)
+      // Candidates with duration >= 60 seconds (full song, strictly filter out 30s snippets)
+      const candidates = tracks.filter((t: any) => {
         const durSec = Math.round((t.duration || 0) / 1000);
-        if (durSec < 60) continue;
+        return durSec >= 60 && t.media?.transcodings?.some((x: any) => x.format?.protocol === 'progressive');
+      }).slice(0, 5);
 
-        // Find progressive stream (native MP3) or hls
-        const trans = t.media?.transcodings?.find((x: any) => x.format?.protocol === 'progressive') ||
-                      t.media?.transcodings?.find((x: any) => x.format?.protocol === 'hls' && x.format?.mime_type?.includes('mpeg'));
-        if (!trans?.url) continue;
-
-        try {
-          const sCtrl = new AbortController();
-          const sTimeout = setTimeout(() => sCtrl.abort(), 3500);
-          const streamRes = await fetch(`${trans.url}?client_id=${clientId}`, { signal: sCtrl.signal });
-          clearTimeout(sTimeout);
-          if (streamRes.ok) {
-            const streamData: any = await streamRes.json();
-            if (streamData?.url) {
-              const capa = (t.artwork_url || t.user?.avatar_url || '').replace('large', 't500x500');
-              return {
-                audioUrl: streamData.url,
-                titulo: t.title || title,
-                canal: t.user?.username || artist,
-                duracao: durSec,
-                capa: capa,
-                source: 'soundcloud'
-              };
+      if (candidates.length > 0) {
+        // Resolve streams in parallel to keep response time < 800ms
+        const streamPromises = candidates.map(async (t: any) => {
+          const trans = t.media?.transcodings?.find((x: any) => x.format?.protocol === 'progressive');
+          if (!trans?.url) return null;
+          try {
+            const sCtrl = new AbortController();
+            const sTimeout = setTimeout(() => sCtrl.abort(), 2800);
+            const streamRes = await fetch(`${trans.url}?client_id=${clientId}`, { signal: sCtrl.signal });
+            clearTimeout(sTimeout);
+            if (streamRes.ok) {
+              const streamData: any = await streamRes.json();
+              if (streamData?.url) {
+                const durSec = Math.round((t.duration || 0) / 1000);
+                const capa = (t.artwork_url || t.user?.avatar_url || '').replace('large', 't500x500');
+                return {
+                  audioUrl: streamData.url,
+                  titulo: t.title || title,
+                  canal: t.user?.username || artist,
+                  duracao: durSec,
+                  capa: capa,
+                  source: 'soundcloud' as const
+                };
+              }
             }
-          }
-        } catch {}
+          } catch {}
+          return null;
+        });
+
+        const resolved = await Promise.all(streamPromises);
+        const best = resolved.find(Boolean);
+        if (best) {
+          fullAudioCache.set(cacheKey, best);
+          return best;
+        }
       }
     }
   } catch (e) {
@@ -229,10 +247,9 @@ async function searchFullTrackAudio(title: string, artist: string): Promise<Full
     if (res.ok) {
       const data: any = await res.json();
       if (Array.isArray(data.data) && data.data.length > 0) {
-        // Enforce duration >= 60
         const item = data.data.find((x: any) => (x.duration || 0) >= 60);
         if (item && item.id) {
-          return {
+          const audiusResult: FullTrackAudioResult = {
             audioUrl: `https://api.audius.co/v1/tracks/${item.id}/stream?app_name=ProbeMusic`,
             titulo: item.title || title,
             canal: item.user?.name || artist,
@@ -240,13 +257,13 @@ async function searchFullTrackAudio(title: string, artist: string): Promise<Full
             capa: item.artwork?.['480x480'] || item.artwork?.['150x150'] || '',
             source: 'audius'
           };
+          fullAudioCache.set(cacheKey, audiusResult);
+          return audiusResult;
         }
       }
     }
   } catch {}
 
-  // NOTE: Deezer and iTunes 30-second previews are intentionally NOT used
-  // to ensure songs always play the full duration from start to finish.
   return null;
 }
 
@@ -472,6 +489,7 @@ app.get('/api/public-playlist', async (req, res) => {
     if (faixas.length > 0) {
       return res.json({
         sucesso: true,
+        playlist_id: id,
         nome_playlist: playlistName,
         capa_playlist: coverUrl || faixas[0]?.capa || '',
         total_faixas: faixas.length,

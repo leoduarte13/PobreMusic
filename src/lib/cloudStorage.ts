@@ -169,7 +169,7 @@ export async function getCloudPlaylists(): Promise<CloudPlaylistItem[]> {
 
 export async function createCloudPlaylist(name: string, initialTracks: Track[] = []): Promise<CloudPlaylistItem> {
   const trimmed = name.trim() || 'Nova Playlist';
-  const id = sanitizeDocId(`pl_${Date.now()}_${trimmed}`);
+  const id = sanitizeDocId(`pl_${Date.now()}_${Math.random().toString(36).slice(2, 6)}_${trimmed}`);
   const cleanFaixas = initialTracks.map(t => cleanTrackForFirestore(t));
 
   const item: CloudPlaylistItem = {
@@ -186,11 +186,16 @@ export async function createCloudPlaylist(name: string, initialTracks: Track[] =
   return item;
 }
 
-export async function savePlaylistToCloud(playlist: PlaylistData): Promise<CloudPlaylistItem> {
+export async function savePlaylistToCloud(playlist: PlaylistData & { id?: string }): Promise<CloudPlaylistItem> {
   if (!playlist.nome_playlist) throw new Error('Playlist sem nome');
 
-  const id = sanitizeDocId(`pl_${playlist.nome_playlist}_${playlist.playlist_id || 'imported'}`);
   const cleanFaixas = (playlist.faixas || []).map(t => cleanTrackForFirestore(t));
+  // If the playlist already has an id (updating an existing cloud playlist), keep it.
+  // Otherwise generate a unique ID using timestamp and playlist_id / name to prevent any collisions
+  const uniqueKey = playlist.playlist_id
+    ? playlist.playlist_id
+    : `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const id = playlist.id || sanitizeDocId(`pl_${uniqueKey}_${playlist.nome_playlist}`);
 
   const item: CloudPlaylistItem = {
     id,

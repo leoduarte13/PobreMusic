@@ -24,7 +24,8 @@ import {
   pauseBackgroundAudioKeeper,
   requestScreenWakeLock,
   releaseScreenWakeLock,
-  toggleScreenWakeLock
+  toggleScreenWakeLock,
+  SILENT_WAV
 } from './lib/backgroundKeeper';
 import { safeFetchJson, extractSpotifyDirectly } from './lib/spotifyResolver';
 import { detectInputType, resolveYouTubeVideo, resolveYouTubePlaylist } from './lib/universalLinkResolver';
@@ -65,7 +66,10 @@ export default function App() {
 
   // Cloud Playlist Modals
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [createModalTab, setCreateModalTab] = useState<'name' | 'link'>('name');
   const [newPlaylistName, setNewPlaylistName] = useState('');
+  const [importPlaylistLink, setImportPlaylistLink] = useState('');
+  const [isImportingLink, setIsImportingLink] = useState(false);
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null);
   const [tracksToAddToPlaylist, setTracksToAddToPlaylist] = useState<Track[] | null>(null);
 
@@ -378,6 +382,27 @@ export default function App() {
     };
   }, [nextTrack]);
 
+  // Background pre-fetcher for the next track in the playlist
+  // Ensures zero-delay continuous playback across songs in mobile background / lockscreen
+  const prefetchNextTrack = (currentIndex: number, currentList: Track[]) => {
+    const nextIdx = currentIndex + 1 < currentList.length ? currentIndex + 1 : (repeat === 'all' ? 0 : -1);
+    if (nextIdx >= 0 && currentList[nextIdx]) {
+      const nextT = currentList[nextIdx];
+      if (!nextT.audioUrl && !nextT.audioBlobUrl) {
+        fetch(`${getApiBase()}/api/search?nome_musica=${encodeURIComponent(nextT.nome_musica)}&nome_artista=${encodeURIComponent(nextT.nome_artista)}`, { cache: 'no-store' })
+          .then(r => safeFetchJson(r))
+          .then(res => {
+            if (res?.sucesso && res.audioUrl) {
+              nextT.audioUrl = res.audioUrl;
+              if (res.duracao) nextT.duracao_ms = res.duracao * 1000;
+              if (res.capa && !nextT.capa) nextT.capa = res.capa;
+            }
+          })
+          .catch(() => {});
+      }
+    }
+  };
+
   // Main playback switcher (Prioritizes 100% Mobile Background & Lockscreen HTML5 Native Audio)
   const playIndex = useCallback(async (i: number) => {
     const list = tracksRef.current;
@@ -394,14 +419,18 @@ export default function App() {
     setTime(0);
     setDuration(track.duracao_ms ? Math.round(track.duracao_ms / 1000) : 0);
 
-    // Stop both engines before switching
-    if (nativeAudioRef.current) {
-      nativeAudioRef.current.pause();
-      nativeAudioRef.current.removeAttribute('src');
-      nativeAudioRef.current.load();
-    }
+    // Stop YouTube video if it was playing
     if (ytPlayerRef.current?.stopVideo) {
-      ytPlayerRef.current.stopVideo();
+      try { ytPlayerRef.current.stopVideo(); } catch {}
+    }
+
+    // Synchronously prime the native audio element within the user gesture window
+    // This unlocks playback on mobile iOS Safari and Android Chrome without being blocked!
+    if (nativeAudioRef.current) {
+      if (!nativeAudioRef.current.src || nativeAudioRef.current.src === '') {
+        nativeAudioRef.current.src = SILENT_WAV;
+      }
+      nativeAudioRef.current.play().catch(() => {});
     }
 
     // Helper: Identify and reject stale 30s preview links
@@ -428,6 +457,9 @@ export default function App() {
         nativeAudioRef.current.volume = muted ? 0 : volume / 100;
         try {
           await nativeAudioRef.current.play();
+          startBackgroundAudioKeeper();
+          requestScreenWakeLock().then(on => setIsWakeLockOn(on));
+          prefetchNextTrack(i, list);
         } catch {
           setStatus('paused');
         }
@@ -470,9 +502,12 @@ export default function App() {
           nativeAudioRef.current.volume = muted ? 0 : volume / 100;
           try {
             await nativeAudioRef.current.play();
+            startBackgroundAudioKeeper();
+            requestScreenWakeLock().then(on => setIsWakeLockOn(on));
+            prefetchNextTrack(i, list);
             return;
-          } catch {
-            // fallback to YouTube if native audio fails
+          } catch (playErr) {
+            console.warn('Native audio play error, falling back to YouTube:', playErr);
           }
         }
 
@@ -678,12 +713,14 @@ export default function App() {
 
         setPlaylist(ytPlaylistData);
         setTracks(ytPlaylistData.faixas);
-        setActiveTab('queue');
+        setQuery('');
+        setActiveTab('cloud_playlists');
 
         // Auto-save to Cloud Firestore (0 MB no celular, persistido na nuvem)
         try {
           const savedPl = await savePlaylistToCloud(ytPlaylistData);
           setCloudPlaylists(prev => [savedPl, ...prev.filter(p => p.id !== savedPl.id)]);
+          setSelectedCloudPlaylistId(savedPl.id);
           refreshCloud();
         } catch (saveErr) {
           console.warn('Erro ao auto-salvar playlist na nuvem:', saveErr);
@@ -731,12 +768,14 @@ export default function App() {
 
         const base = data.faixas || [];
         setTracks(base);
-        setActiveTab('queue');
+        setQuery('');
+        setActiveTab('cloud_playlists');
 
         // Auto-save immediately to Cloud Firestore (0 MB no celular, igual ao Spotify!)
         try {
           const savedPl = await savePlaylistToCloud(data);
           setCloudPlaylists(prev => [savedPl, ...prev.filter(p => p.id !== savedPl.id)]);
+          setSelectedCloudPlaylistId(savedPl.id);
           refreshCloud();
           showToast(`☁ "${data.nome_playlist}" salva na Nuvem (0 MB no celular)!`);
         } catch (saveErr) {
@@ -745,7 +784,9 @@ export default function App() {
 
         // Auto-save to session state (permanece ao recarregar a página)
         saveSessionState({ playlist: data, tracks: base, index: null });
+        setLoading(false); // Unblock the UI immediately so the user can import more playlists
 
+        // Background stream resolver: pre-resolve audio in background
         const resolved = [...base];
         let done = 0;
         for (let i = 0; i < resolved.length; i += 4) {
@@ -834,6 +875,56 @@ export default function App() {
       showToast(`✔ Playlist "${newPl.nome_playlist}" salva na Nuvem (0 MB no celular)!`);
     } catch (e: any) {
       showToast(e?.message || 'Erro ao criar playlist na nuvem.');
+    }
+  };
+
+  const handleImportPlaylistFromLink = async (rawLink: string) => {
+    const val = rawLink.trim();
+    if (!val) {
+      showToast('Por favor, cole um link válido do Spotify ou YouTube.');
+      return;
+    }
+    const detected = detectInputType(val);
+    if (detected.kind !== 'spotify' && detected.kind !== 'youtube_playlist') {
+      showToast('Link não reconhecido como playlist do Spotify ou YouTube.');
+      return;
+    }
+
+    try {
+      setIsImportingLink(true);
+      showToast('☁ Conectando e extraindo playlist...');
+      let plData: PlaylistData | null = null;
+
+      if (detected.kind === 'youtube_playlist') {
+        plData = await resolveYouTubePlaylist(detected.listId, detected.url);
+      } else if (detected.kind === 'spotify') {
+        try {
+          const response = await fetch(`${getApiBase()}/api/public-playlist?url=${encodeURIComponent(val)}`, { cache: 'no-store' });
+          if (response.ok) {
+            plData = await safeFetchJson<PlaylistData>(response);
+          }
+        } catch {}
+        if (!plData || !plData.sucesso || !plData.faixas?.length) {
+          plData = await extractSpotifyDirectly(val);
+        }
+      }
+
+      if (!plData || !plData.faixas || plData.faixas.length === 0) {
+        throw new Error('Nenhuma música encontrada neste link de playlist.');
+      }
+
+      showToast(`☁ Salvando "${plData.nome_playlist}" na Nuvem (0 MB)...`);
+      const saved = await savePlaylistToCloud(plData);
+      await refreshCloud();
+      setSelectedCloudPlaylistId(saved.id);
+      setActiveTab('cloud_playlists');
+      setIsCreateModalOpen(false);
+      setImportPlaylistLink('');
+      showToast(`✔ Playlist "${saved.nome_playlist}" (${saved.total_faixas} faixas) salva com sucesso!`);
+    } catch (err: any) {
+      showToast(err?.message || 'Erro ao importar playlist.');
+    } finally {
+      setIsImportingLink(false);
     }
   };
 
@@ -1492,7 +1583,7 @@ export default function App() {
                       ☁ Salvas 100% no Firebase • 0 MB de memória ocupada no celular
                     </p>
                   </div>
-                  <div style={{ display: 'flex', gap: 8 }}>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     <button
                       className="pill-btn"
                       onClick={refreshCloud}
@@ -1501,13 +1592,24 @@ export default function App() {
                       {loadingCloud ? 'Atualizando…' : '🔄 Atualizar'}
                     </button>
                     <button
-                      className="btn-primary"
+                      className="pill-btn"
                       onClick={() => {
                         setTracksToAddToPlaylist(null);
+                        setCreateModalTab('link');
                         setIsCreateModalOpen(true);
                       }}
                     >
-                      + Criar Playlist na Nuvem
+                      ☁ Importar Playlist (Link)
+                    </button>
+                    <button
+                      className="btn-primary"
+                      onClick={() => {
+                        setTracksToAddToPlaylist(null);
+                        setCreateModalTab('name');
+                        setIsCreateModalOpen(true);
+                      }}
+                    >
+                      + Criar Playlist
                     </button>
                   </div>
                 </div>
@@ -1517,14 +1619,30 @@ export default function App() {
                     <div style={{ fontSize: 40, marginBottom: 10 }}>☁</div>
                     <p style={{ color: '#fff', fontWeight: 700, marginBottom: 4 }}>Nenhuma playlist na Nuvem ainda</p>
                     <p style={{ fontSize: 13, maxWidth: 360, margin: '0 auto 16px' }}>
-                      Crie sua primeira playlist na Nuvem! Todas as músicas ficam salvas no servidor sem gastar espaço do seu celular.
+                      Crie ou importe suas playlists para a Nuvem! Ficam salvas com segurança no servidor sem gastar espaço do seu celular.
                     </p>
-                    <button
-                      className="btn-primary"
-                      onClick={() => setIsCreateModalOpen(true)}
-                    >
-                      + Criar Playlist na Nuvem (0 MB)
-                    </button>
+                    <div style={{ display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
+                      <button
+                        className="btn-primary"
+                        onClick={() => {
+                          setTracksToAddToPlaylist(null);
+                          setCreateModalTab('name');
+                          setIsCreateModalOpen(true);
+                        }}
+                      >
+                        + Criar Playlist na Nuvem
+                      </button>
+                      <button
+                        className="pill-btn"
+                        onClick={() => {
+                          setTracksToAddToPlaylist(null);
+                          setCreateModalTab('link');
+                          setIsCreateModalOpen(true);
+                        }}
+                      >
+                        ☁ Importar por Link (Spotify / YouTube)
+                      </button>
+                    </div>
                   </div>
                 ) : (
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 14 }}>
@@ -1605,17 +1723,41 @@ export default function App() {
               // Detailed View of a Single Cloud Playlist
               activeCloudPlaylist && (
                 <div>
-                  <button
-                    className="pill-btn"
-                    style={{ marginBottom: 14 }}
-                    onClick={() => {
-                      setSelectedCloudPlaylistId(null);
-                      setIsSelectionMode(false);
-                      setSelectedIndices([]);
-                    }}
-                  >
-                    ← Voltar para Playlists na Nuvem
-                  </button>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 8 }}>
+                    <button
+                      className="pill-btn"
+                      onClick={() => {
+                        setSelectedCloudPlaylistId(null);
+                        setIsSelectionMode(false);
+                        setSelectedIndices([]);
+                      }}
+                    >
+                      ← Voltar para Playlists na Nuvem
+                    </button>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button
+                        className="pill-btn"
+                        onClick={() => {
+                          setTracksToAddToPlaylist(null);
+                          setCreateModalTab('link');
+                          setIsCreateModalOpen(true);
+                        }}
+                      >
+                        ☁ Importar Outra Playlist
+                      </button>
+                      <button
+                        className="btn-primary"
+                        style={{ padding: '6px 14px', fontSize: 13 }}
+                        onClick={() => {
+                          setTracksToAddToPlaylist(null);
+                          setCreateModalTab('name');
+                          setIsCreateModalOpen(true);
+                        }}
+                      >
+                        + Nova Playlist
+                      </button>
+                    </div>
+                  </div>
 
                   <div className="playlist-banner">
                     <img src={activeCloudPlaylist.capa_playlist || placeholder} alt="" />
@@ -2048,49 +2190,134 @@ export default function App() {
         </div>
       )}
 
-      {/* Modal: Create New Cloud Playlist */}
+      {/* Modal: Create or Import Cloud Playlist */}
       {isCreateModalOpen && (
         <div className="simple-modal-backdrop" onClick={() => setIsCreateModalOpen(false)}>
           <div className="simple-modal-box" onClick={e => e.stopPropagation()}>
             <h3 style={{ fontSize: 18, fontWeight: 800, color: '#fff', marginBottom: 4 }}>
-              Nova Playlist na Nuvem
+              {tracksToAddToPlaylist ? 'Nova Playlist com Músicas Selecionadas' : 'Playlist na Nuvem'}
             </h3>
-            <p style={{ fontSize: 12, color: '#00f0ff', marginBottom: 16 }}>
-              ☁ Salva 100% no Firebase • 0 MB de consumo de memória no celular.
+            <p style={{ fontSize: 12, color: '#00f0ff', marginBottom: 14 }}>
+              ☁ Armazenada 100% no Firebase • 0 MB de consumo de memória no celular.
             </p>
-            <input
-              autoFocus
-              value={newPlaylistName}
-              onChange={e => setNewPlaylistName(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleCreateCloudPlaylist()}
-              placeholder="Ex: Treino, Festa, Melhores do Trap..."
-              style={{
-                width: '100%',
-                background: '#100a20',
-                border: '1px solid rgba(0, 240, 255, 0.4)',
-                borderRadius: 12,
-                padding: '12px 14px',
-                color: '#fff',
-                fontSize: 14,
-                marginBottom: 18,
-                outline: 'none'
-              }}
-            />
-            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-              <button
-                className="pill-btn"
-                onClick={() => setIsCreateModalOpen(false)}
-              >
-                Cancelar
-              </button>
-              <button
-                className="btn-primary"
-                onClick={handleCreateCloudPlaylist}
-                disabled={!newPlaylistName.trim()}
-              >
-                Criar na Nuvem (0 MB)
-              </button>
-            </div>
+
+            {/* Tab selector if not creating from selected tracks */}
+            {!tracksToAddToPlaylist && (
+              <div style={{ display: 'flex', gap: 6, marginBottom: 16, background: 'rgba(0,0,0,0.3)', padding: 4, borderRadius: 10 }}>
+                <button
+                  style={{
+                    flex: 1,
+                    padding: '8px 12px',
+                    borderRadius: 8,
+                    fontSize: 13,
+                    fontWeight: 700,
+                    background: createModalTab === 'name' ? 'linear-gradient(135deg, #7928ca, #ff0080)' : 'transparent',
+                    color: createModalTab === 'name' ? '#fff' : '#a093b8'
+                  }}
+                  onClick={() => setCreateModalTab('name')}
+                >
+                  ✏ Criar Vazia
+                </button>
+                <button
+                  style={{
+                    flex: 1,
+                    padding: '8px 12px',
+                    borderRadius: 8,
+                    fontSize: 13,
+                    fontWeight: 700,
+                    background: createModalTab === 'link' ? 'linear-gradient(135deg, #00f0ff, #7928ca)' : 'transparent',
+                    color: createModalTab === 'link' ? '#070314' : '#a093b8'
+                  }}
+                  onClick={() => setCreateModalTab('link')}
+                >
+                  ☁ Importar por Link
+                </button>
+              </div>
+            )}
+
+            {tracksToAddToPlaylist && (
+              <div style={{ padding: '8px 12px', background: 'rgba(0,240,255,0.1)', borderRadius: 10, border: '1px solid rgba(0,240,255,0.3)', marginBottom: 14, fontSize: 12, color: '#00f0ff' }}>
+                Adicionando <b>{tracksToAddToPlaylist.length}</b> música(s) a esta nova playlist
+              </div>
+            )}
+
+            {createModalTab === 'name' || tracksToAddToPlaylist ? (
+              <div>
+                <input
+                  autoFocus
+                  value={newPlaylistName}
+                  onChange={e => setNewPlaylistName(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleCreateCloudPlaylist()}
+                  placeholder="Ex: Treino, Festa, Melhores do Trap..."
+                  style={{
+                    width: '100%',
+                    background: '#100a20',
+                    border: '1px solid rgba(0, 240, 255, 0.4)',
+                    borderRadius: 12,
+                    padding: '12px 14px',
+                    color: '#fff',
+                    fontSize: 14,
+                    marginBottom: 18,
+                    outline: 'none'
+                  }}
+                />
+                <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+                  <button
+                    className="pill-btn"
+                    onClick={() => setIsCreateModalOpen(false)}
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    className="btn-primary"
+                    onClick={handleCreateCloudPlaylist}
+                    disabled={!newPlaylistName.trim()}
+                  >
+                    Criar na Nuvem (0 MB)
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div>
+                <input
+                  autoFocus
+                  value={importPlaylistLink}
+                  onChange={e => setImportPlaylistLink(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && !isImportingLink && handleImportPlaylistFromLink(importPlaylistLink)}
+                  placeholder="Cole o link da playlist (Spotify ou YouTube)..."
+                  style={{
+                    width: '100%',
+                    background: '#100a20',
+                    border: '1px solid rgba(0, 240, 255, 0.4)',
+                    borderRadius: 12,
+                    padding: '12px 14px',
+                    color: '#fff',
+                    fontSize: 13,
+                    marginBottom: 10,
+                    outline: 'none'
+                  }}
+                />
+                <p style={{ fontSize: 11, color: '#a093b8', marginBottom: 18 }}>
+                  💡 Suporta links de playlists públicas do <b>Spotify</b> e do <b>YouTube</b>. Todas as faixas são importadas para sua biblioteca na nuvem.
+                </p>
+                <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+                  <button
+                    className="pill-btn"
+                    onClick={() => setIsCreateModalOpen(false)}
+                    disabled={isImportingLink}
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    className="btn-primary"
+                    onClick={() => handleImportPlaylistFromLink(importPlaylistLink)}
+                    disabled={!importPlaylistLink.trim() || isImportingLink}
+                  >
+                    {isImportingLink ? 'Importando Faixas…' : '☁ Importar Playlist (0 MB)'}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

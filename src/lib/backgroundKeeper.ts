@@ -1,7 +1,7 @@
 // Background Audio & WakeLock Engine
 // Solves mobile browser background audio suspensions on Chrome/Android and Safari/iOS
 
-const SILENT_WAV = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
+export const SILENT_WAV = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
 
 let silentAudioElement: HTMLAudioElement | null = null;
 let wakeLockSentinel: any = null;
