@@ -78,13 +78,14 @@ export default function App() {
   const [shuffle, setShuffle] = useState(false);
   const [repeat, setRepeat] = useState<'off' | 'all' | 'one'>('all');
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [audioSourceType, setAudioSourceType] = useState<'html5' | 'yt'>('html5');
 
   // User Play Intent & Audio Engine Refs
   const userWantsPlayRef = useRef(false);
   const ytPlayerRef = useRef<any>(null);
   const isYtReadyRef = useRef(false);
   const nativeAudioRef = useRef<HTMLAudioElement | null>(null);
-  const activeAudioSourceRef = useRef<'native' | 'yt'>('yt');
+  const activeAudioSourceRef = useRef<'native' | 'yt'>('native');
   const timerRef = useRef<any>(null);
 
   // Synchronized state refs for callbacks
@@ -167,7 +168,11 @@ export default function App() {
         artist: track.nome_artista,
         album: track.album || playlist?.nome_playlist || 'Probe Music',
         artwork: track.capa ? [
-          { src: track.capa, sizes: '300x300', type: 'image/jpeg' },
+          { src: track.capa, sizes: '96x96', type: 'image/jpeg' },
+          { src: track.capa, sizes: '128x128', type: 'image/jpeg' },
+          { src: track.capa, sizes: '192x192', type: 'image/jpeg' },
+          { src: track.capa, sizes: '256x256', type: 'image/jpeg' },
+          { src: track.capa, sizes: '384x384', type: 'image/jpeg' },
           { src: track.capa, sizes: '512x512', type: 'image/jpeg' }
         ] : []
       });
@@ -227,8 +232,15 @@ export default function App() {
     audio.preload = 'auto';
     nativeAudioRef.current = audio;
 
+    audio.onloadedmetadata = () => {
+      if (audio.duration && Number.isFinite(audio.duration) && audio.duration > 1) {
+        setDuration(audio.duration);
+      }
+    };
+
     audio.onplay = () => {
       setStatus('playing');
+      setAudioSourceType('html5');
       userWantsPlayRef.current = true;
       startBackgroundAudioKeeper();
       requestScreenWakeLock().then(on => setIsWakeLockOn(on));
@@ -247,9 +259,20 @@ export default function App() {
     };
     audio.ontimeupdate = () => {
       if (activeAudioSourceRef.current === 'native') {
-        setTime(audio.currentTime);
+        const cur = audio.currentTime;
+        setTime(cur);
         if (audio.duration && Number.isFinite(audio.duration)) {
-          setDuration(audio.duration);
+          const dur = audio.duration;
+          setDuration(dur);
+          if ('mediaSession' in navigator && 'setPositionState' in navigator.mediaSession) {
+            try {
+              navigator.mediaSession.setPositionState({
+                duration: dur,
+                playbackRate: audio.playbackRate || 1,
+                position: Math.min(cur, dur)
+              });
+            } catch {}
+          }
         }
       }
     };
@@ -334,6 +357,15 @@ export default function App() {
           const d = ytPlayerRef.current.getDuration() || 0;
           setTime(t);
           setDuration(d);
+          if ('mediaSession' in navigator && 'setPositionState' in navigator.mediaSession && d > 0) {
+            try {
+              navigator.mediaSession.setPositionState({
+                duration: d,
+                playbackRate: 1,
+                position: Math.min(t, d)
+              });
+            } catch {}
+          }
         } catch {}
       }
     }, 500);
@@ -346,7 +378,7 @@ export default function App() {
     };
   }, [nextTrack]);
 
-  // Main playback switcher
+  // Main playback switcher (Prioritizes 100% Mobile Background & Lockscreen HTML5 Native Audio)
   const playIndex = useCallback(async (i: number) => {
     const list = tracksRef.current;
     if (i < 0 || i >= list.length) return;
@@ -372,9 +404,24 @@ export default function App() {
       ytPlayerRef.current.stopVideo();
     }
 
-    // Engine 1: Direct Audio URL or Blob
-    if (track.audioBlobUrl || track.audioUrl) {
+    // Helper: Identify and reject stale 30s preview links
+    const is30sPreview = (u?: string, durMs?: number) => {
+      if (!u) return false;
+      if (u.includes('dzcdn.net') || u.includes('preview') || u.includes('apple.com')) return true;
+      if (durMs && durMs <= 45000) return true;
+      return false;
+    };
+
+    // Cleanse any old cached 30s preview URLs
+    if (track.audioUrl && is30sPreview(track.audioUrl, track.duracao_ms)) {
+      delete track.audioUrl;
+      track.duracao_ms = undefined;
+    }
+
+    // Engine 1: Direct Audio URL or Blob (Instant HTML5 Native Audio - Full Tracks only)
+    if (track.audioBlobUrl || (track.audioUrl && !is30sPreview(track.audioUrl, track.duracao_ms))) {
       activeAudioSourceRef.current = 'native';
+      setAudioSourceType('html5');
       const url = track.audioBlobUrl || track.audioUrl!;
       if (nativeAudioRef.current) {
         nativeAudioRef.current.src = url;
@@ -388,9 +435,67 @@ export default function App() {
       return;
     }
 
-    // Engine 2: YouTube Audio Stream via VideoId
+    // Engine 1.5: Query HTML5 Full Audio stream (Full length, no 30s previews)
+    // Ensures full track playback in background and lockscreen
+    try {
+      setStatus('buffering');
+      showToast(`Carregando faixa completa de "${track.nome_musica}"...`);
+      const r = await fetch(
+        `${getApiBase()}/api/search?nome_musica=${encodeURIComponent(track.nome_musica)}&nome_artista=${encodeURIComponent(track.nome_artista)}`,
+        { cache: 'no-store' }
+      );
+      const result = await safeFetchJson(r);
+      if (r.ok && result.sucesso) {
+        if (result.audioUrl && !is30sPreview(result.audioUrl, result.duracao * 1000)) {
+          track.audioUrl = result.audioUrl;
+        }
+        if (result.videoId && !track.videoId) {
+          track.videoId = result.videoId;
+        }
+        if (result.capa && !track.capa) {
+          track.capa = result.capa;
+        }
+        if (result.duracao) {
+          track.duracao_ms = result.duracao * 1000;
+          setDuration(result.duracao);
+        }
+        setTracks([...list]);
+        setMetadata(track);
+
+        // If direct HTML5 full audio stream is found, play it with native audio engine
+        if (result.audioUrl && !is30sPreview(result.audioUrl, result.duracao * 1000) && nativeAudioRef.current) {
+          activeAudioSourceRef.current = 'native';
+          setAudioSourceType('html5');
+          nativeAudioRef.current.src = result.audioUrl;
+          nativeAudioRef.current.volume = muted ? 0 : volume / 100;
+          try {
+            await nativeAudioRef.current.play();
+            return;
+          } catch {
+            // fallback to YouTube if native audio fails
+          }
+        }
+
+        // Fallback to YouTube engine if HTML5 stream not available
+        if (result.videoId) {
+          activeAudioSourceRef.current = 'yt';
+          setAudioSourceType('yt');
+          if (ytPlayerRef.current?.loadVideoById) {
+            ytPlayerRef.current.loadVideoById(result.videoId);
+            ytPlayerRef.current.setVolume(muted ? 0 : volume);
+            ytPlayerRef.current.playVideo();
+          }
+          return;
+        }
+      }
+    } catch (e) {
+      console.warn('HTML5 search failed, checking existing videoId', e);
+    }
+
+    // Engine 2: Existing YouTube VideoId Fallback
     if (track.videoId) {
       activeAudioSourceRef.current = 'yt';
+      setAudioSourceType('yt');
       if (ytPlayerRef.current?.loadVideoById) {
         ytPlayerRef.current.loadVideoById(track.videoId);
         ytPlayerRef.current.setVolume(muted ? 0 : volume);
@@ -399,29 +504,8 @@ export default function App() {
       return;
     }
 
-    // If track doesn't have videoId or audioUrl yet, search online
-    try {
-      setStatus('buffering');
-      showToast(`Buscando áudio de "${track.nome_musica}"...`);
-      const r = await fetch(`${getApiBase()}/api/search?nome_musica=${encodeURIComponent(track.nome_musica)}&nome_artista=${encodeURIComponent(track.nome_artista)}`, { cache: 'no-store' });
-      const result = await safeFetchJson(r);
-      if (r.ok && result.videoId) {
-        track.videoId = result.videoId;
-        track.videoTitle = result.titulo;
-        setTracks([...list]);
-        activeAudioSourceRef.current = 'yt';
-        if (ytPlayerRef.current?.loadVideoById) {
-          ytPlayerRef.current.loadVideoById(result.videoId);
-          ytPlayerRef.current.setVolume(muted ? 0 : volume);
-          ytPlayerRef.current.playVideo();
-        }
-      } else {
-        throw new Error('Áudio não localizado');
-      }
-    } catch {
-      showToast(`Áudio não disponível para "${track.nome_musica}".`);
-      nextTrack();
-    }
+    showToast(`Áudio não disponível para "${track.nome_musica}". Indo para próxima...`);
+    nextTrack();
   }, [muted, volume, nextTrack, setMetadata]);
 
   // MediaSession Action Handlers
@@ -459,9 +543,17 @@ export default function App() {
     safe('seekbackward', () => seekAudio(Math.max(0, time - 10)));
     safe('seekforward', () => seekAudio(time + 10));
 
+    try {
+      (ms as any).setActionHandler('seekto', (details: any) => {
+        if (details.seekTime !== undefined && details.seekTime !== null) {
+          seekAudio(details.seekTime);
+        }
+      });
+    } catch {}
+
     return () => {
-      ['play','pause','nexttrack','previoustrack','seekbackward','seekforward'].forEach(name => {
-        try { ms.setActionHandler(name as MediaSessionAction, null); } catch {}
+      ['play','pause','nexttrack','previoustrack','seekbackward','seekforward','seekto'].forEach(name => {
+        try { ms.setActionHandler(name as any, null); } catch {}
       });
     };
   }, [nextTrack, prevTrack, playIndex, time]);
@@ -472,6 +564,15 @@ export default function App() {
       nativeAudioRef.current.currentTime = seconds;
     } else if (ytPlayerRef.current?.seekTo) {
       ytPlayerRef.current.seekTo(seconds, true);
+    }
+    if ('mediaSession' in navigator && 'setPositionState' in navigator.mediaSession && duration > 0) {
+      try {
+        navigator.mediaSession.setPositionState({
+          duration: duration,
+          playbackRate: 1,
+          position: Math.min(seconds, duration)
+        });
+      } catch {}
     }
   };
 
@@ -653,8 +754,16 @@ export default function App() {
             try {
               const r = await fetch(`${getApiBase()}/api/search?nome_musica=${encodeURIComponent(track.nome_musica)}&nome_artista=${encodeURIComponent(track.nome_artista)}`, { cache: 'no-store' });
               const result = await safeFetchJson(r);
-              resolved[i + j] = r.ok && result.videoId
-                ? { ...track, videoId: result.videoId, videoTitle: result.titulo, hasError: false }
+              resolved[i + j] = r.ok && (result.audioUrl || result.videoId)
+                ? {
+                    ...track,
+                    audioUrl: result.audioUrl || track.audioUrl,
+                    videoId: result.videoId || track.videoId,
+                    videoTitle: result.titulo,
+                    capa: track.capa || result.capa,
+                    duracao_ms: track.duracao_ms || (result.duracao ? result.duracao * 1000 : undefined),
+                    hasError: false
+                  }
                 : { ...track, hasError: true };
             } catch {
               resolved[i + j] = { ...track, hasError: true };
@@ -669,7 +778,7 @@ export default function App() {
         setTracks(resolved);
         saveSessionState({ playlist: data, tracks: resolved, index: indexRef.current });
 
-        // Update Cloud Firestore playlist document with resolved videoIds
+        // Update Cloud Firestore playlist document with resolved tracks
         try {
           await savePlaylistToCloud({ ...data, faixas: resolved });
           refreshCloud();
@@ -688,12 +797,13 @@ export default function App() {
     try {
       const r = await fetch(`${getApiBase()}/api/search?nome_musica=${encodeURIComponent(val)}`, { cache: 'no-store' });
       const result = await safeFetchJson(r);
-      if (!r.ok || !result.videoId) throw new Error(result?.error || 'Música não encontrada.');
+      if (!r.ok || (!result.audioUrl && !result.videoId)) throw new Error(result?.error || 'Música não encontrada.');
 
       const newTrack: Track = {
         nome_musica: result.titulo || val,
         nome_artista: result.canal || 'Artista',
-        videoId: result.videoId,
+        audioUrl: result.audioUrl || undefined,
+        videoId: result.videoId || undefined,
         duracao_ms: (result.duracao || 180) * 1000,
         capa: result.capa || placeholder
       };
@@ -1778,9 +1888,28 @@ export default function App() {
               <b style={{ display: 'block', fontSize: 13, color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                 {current?.nome_musica || 'Probe Music'}
               </b>
-              <small style={{ display: 'block', fontSize: 11, color: '#9d8db8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {current?.nome_artista || 'Toque para abrir o player'}
-              </small>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <small style={{ fontSize: 11, color: '#9d8db8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {current?.nome_artista || 'Toque para abrir o player'}
+                </small>
+                {current && (
+                  <span
+                    style={{
+                      fontSize: 9,
+                      fontWeight: 700,
+                      padding: '1px 5px',
+                      borderRadius: 4,
+                      background: audioSourceType === 'html5' ? 'rgba(0,240,255,0.15)' : 'rgba(255,64,129,0.15)',
+                      color: audioSourceType === 'html5' ? '#00f0ff' : '#ff4081',
+                      border: `1px solid ${audioSourceType === 'html5' ? 'rgba(0,240,255,0.4)' : 'rgba(255,64,129,0.4)'}`,
+                      whiteSpace: 'nowrap'
+                    }}
+                    title={audioSourceType === 'html5' ? 'Áudio Nativo HTML5: Permite ouvir com a tela bloqueada ou em segundo plano' : 'Vídeo YouTube'}
+                  >
+                    {audioSourceType === 'html5' ? '⚡ Faixa Completa' : '📺 YT'}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
 
@@ -2059,9 +2188,16 @@ export default function App() {
             <h2 style={{ fontSize: 22, fontWeight: 800, color: '#fff', marginBottom: 4 }}>
               {current?.nome_musica || 'Nenhuma música'}
             </h2>
-            <p style={{ fontSize: 14, color: '#9d8db8' }}>
+            <p style={{ fontSize: 14, color: '#9d8db8', marginBottom: 8 }}>
               {current?.nome_artista || 'PobreMusic Player'}
             </p>
+            {current && (
+              <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: audioSourceType === 'html5' ? 'rgba(0,240,255,0.12)' : 'rgba(255,64,129,0.12)', border: `1px solid ${audioSourceType === 'html5' ? 'rgba(0,240,255,0.3)' : 'rgba(255,64,129,0.3)'}`, padding: '4px 14px', borderRadius: 999 }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: audioSourceType === 'html5' ? '#00f0ff' : '#ff4081' }}>
+                  {audioSourceType === 'html5' ? '⚡ Faixa Completa • Segundo Plano e Tela Bloqueada' : '📺 Transmissão YouTube • Faixa Completa'}
+                </span>
+              </div>
+            )}
           </div>
 
           {/* Seek Bar */}

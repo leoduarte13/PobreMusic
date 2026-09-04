@@ -113,7 +113,161 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
 });
 
-// API: Search track
+// -------------------------------------------------------------
+// FULL TRACK AUDIO SEARCH ENGINE (SoundCloud & Audius Full Length)
+// Eliminates 30-second previews and provides full song playback
+// -------------------------------------------------------------
+
+let cachedSoundCloudClientId = 'Pb72ranhoyt6gw7hM7TkzUItXlMWSNSo';
+let lastSoundCloudIdFetch = Date.now();
+
+async function getSoundCloudClientId(): Promise<string> {
+  if (cachedSoundCloudClientId && Date.now() - lastSoundCloudIdFetch < 3600000 * 6) {
+    return cachedSoundCloudClientId;
+  }
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4000);
+    const page = await fetch('https://soundcloud.com', {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
+      signal: controller.signal
+    }).then(r => r.text());
+    clearTimeout(timeout);
+    const scriptUrls = [...page.matchAll(/<script[^>]+src="([^"]+\.js)"/g)].map(m => m[1]);
+    for (const url of scriptUrls.slice(-6)) {
+      const fullUrl = url.startsWith('http') ? url : `https://soundcloud.com${url}`;
+      const ctrl = new AbortController();
+      const tm = setTimeout(() => ctrl.abort(), 3000);
+      const js = await fetch(fullUrl, { signal: ctrl.signal }).then(r => r.text());
+      clearTimeout(tm);
+      const match = js.match(/client_id[:=]"([a-zA-Z0-9]{32})"/);
+      if (match && match[1]) {
+        cachedSoundCloudClientId = match[1];
+        lastSoundCloudIdFetch = Date.now();
+        return cachedSoundCloudClientId;
+      }
+    }
+  } catch (e) {
+    console.warn('SoundCloud client_id refresh failed, using cached fallback');
+  }
+  return cachedSoundCloudClientId || 'Pb72ranhoyt6gw7hM7TkzUItXlMWSNSo';
+}
+
+interface FullTrackAudioResult {
+  audioUrl: string;
+  titulo: string;
+  canal: string;
+  duracao: number; // in seconds, MUST be >= 60 seconds (full track)
+  capa: string;
+  source: 'soundcloud' | 'audius';
+}
+
+async function searchFullTrackAudio(title: string, artist: string): Promise<FullTrackAudioResult | null> {
+  const cleanTitle = title.replace(/\(.*?\)/g, '').replace(/\[.*?\]/g, '').trim();
+  const cleanArtist = artist.replace(/feat\..*$/i, '').trim();
+  const q = `${cleanTitle} ${cleanArtist}`.trim();
+
+  // 1. Search SoundCloud for FULL TRACK (must be >= 60 seconds)
+  try {
+    const clientId = await getSoundCloudClientId();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4500);
+    const searchUrl = `https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(q)}&client_id=${clientId}&limit=12`;
+    const res = await fetch(searchUrl, {
+      headers: { 'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0' },
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+
+    if (res.ok) {
+      const data: any = await res.json();
+      const tracks = Array.isArray(data.collection) ? data.collection : [];
+      for (const t of tracks) {
+        // Enforce FULL track: minimum 60s duration (filters out 30s previews and snippet samples!)
+        const durSec = Math.round((t.duration || 0) / 1000);
+        if (durSec < 60) continue;
+
+        // Find progressive stream (native MP3) or hls
+        const trans = t.media?.transcodings?.find((x: any) => x.format?.protocol === 'progressive') ||
+                      t.media?.transcodings?.find((x: any) => x.format?.protocol === 'hls' && x.format?.mime_type?.includes('mpeg'));
+        if (!trans?.url) continue;
+
+        try {
+          const sCtrl = new AbortController();
+          const sTimeout = setTimeout(() => sCtrl.abort(), 3500);
+          const streamRes = await fetch(`${trans.url}?client_id=${clientId}`, { signal: sCtrl.signal });
+          clearTimeout(sTimeout);
+          if (streamRes.ok) {
+            const streamData: any = await streamRes.json();
+            if (streamData?.url) {
+              const capa = (t.artwork_url || t.user?.avatar_url || '').replace('large', 't500x500');
+              return {
+                audioUrl: streamData.url,
+                titulo: t.title || title,
+                canal: t.user?.username || artist,
+                duracao: durSec,
+                capa: capa,
+                source: 'soundcloud'
+              };
+            }
+          }
+        } catch {}
+      }
+    }
+  } catch (e) {
+    console.warn('SoundCloud full track search error:', e);
+  }
+
+  // 2. Search Audius for FULL TRACK (must be >= 60 seconds)
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3500);
+    const res = await fetch(`https://api.audius.co/v1/tracks/search?query=${encodeURIComponent(q)}&app_name=ProbeMusic`, {
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+    if (res.ok) {
+      const data: any = await res.json();
+      if (Array.isArray(data.data) && data.data.length > 0) {
+        // Enforce duration >= 60
+        const item = data.data.find((x: any) => (x.duration || 0) >= 60);
+        if (item && item.id) {
+          return {
+            audioUrl: `https://api.audius.co/v1/tracks/${item.id}/stream?app_name=ProbeMusic`,
+            titulo: item.title || title,
+            canal: item.user?.name || artist,
+            duracao: item.duration || 180,
+            capa: item.artwork?.['480x480'] || item.artwork?.['150x150'] || '',
+            source: 'audius'
+          };
+        }
+      }
+    }
+  } catch {}
+
+  // NOTE: Deezer and iTunes 30-second previews are intentionally NOT used
+  // to ensure songs always play the full duration from start to finish.
+  return null;
+}
+
+// API: HTML5 Full Audio Direct Search
+app.get('/api/html5-audio', async (req, res) => {
+  res.setHeader('Cache-Control', 'public, max-age=1800');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  const nomeMusica = String(req.query.nome_musica || req.query.title || '').trim();
+  const nomeArtista = String(req.query.nome_artista || req.query.artist || '').trim();
+  if (!nomeMusica) return res.status(400).json({ sucesso: false, error: 'Título não informado.' });
+
+  try {
+    const audio = await searchFullTrackAudio(nomeMusica, nomeArtista);
+    if (!audio) return res.status(404).json({ sucesso: false, error: 'Áudio completo não localizado.' });
+    return res.json({ sucesso: true, ...audio });
+  } catch (e: any) {
+    return res.status(500).json({ sucesso: false, error: String(e?.message || e) });
+  }
+});
+
+// API: Search track (HTML5 Full Audio prioritized, YouTube fallback)
 app.get('/api/search', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -123,33 +277,43 @@ app.get('/api/search', async (req, res) => {
   if (!nomeMusica) return res.status(400).json({ sucesso: false, error: 'Nome da música não informado.' });
 
   try {
-    const { items, instance } = await searchTrack(query);
-    if (!items.length) {
+    // 1. Fetch HTML5 full audio stream first (runs in parallel with YouTube search)
+    const [fullAudioResult, ytResult] = await Promise.allSettled([
+      searchFullTrackAudio(nomeMusica, nomeArtista),
+      searchTrack(query)
+    ]);
+
+    const fullAudio = fullAudioResult.status === 'fulfilled' ? fullAudioResult.value : null;
+    let ytBest: any = null;
+
+    if (ytResult.status === 'fulfilled' && ytResult.value.items?.length) {
+      const ranked = ytResult.value.items
+        .map((x: any) => ({
+          videoId: extractVideoId(x.url || x.id),
+          titulo: String(x.title || ''),
+          canal: String(x.uploaderName || x.uploader || ''),
+          duracao: Number(x.duration || 0),
+          capa: x.thumbnail || x.thumbnailUrl || ''
+        }))
+        .filter((x: any) => x.videoId)
+        .sort((a: any, b: any) => score(b.titulo, nomeMusica, nomeArtista, b.canal) - score(a.titulo, nomeMusica, nomeArtista, a.canal));
+
+      ytBest = ranked[0] || null;
+    }
+
+    if (!fullAudio && !ytBest) {
       return res.status(404).json({ sucesso: false, error: 'Música não encontrada nos provedores de áudio.' });
     }
 
-    const ranked = items
-      .map((x: any) => ({
-        videoId: extractVideoId(x.url || x.id),
-        titulo: String(x.title || ''),
-        canal: String(x.uploaderName || x.uploader || ''),
-        duracao: Number(x.duration || 0),
-        capa: x.thumbnail || x.thumbnailUrl || ''
-      }))
-      .filter((x: any) => x.videoId)
-      .sort((a: any, b: any) => score(b.titulo, nomeMusica, nomeArtista, b.canal) - score(a.titulo, nomeMusica, nomeArtista, a.canal));
-
-    const best = ranked[0];
-    if (!best) return res.status(404).json({ sucesso: false, error: 'Nenhum vídeo válido encontrado.' });
-
     return res.json({
       sucesso: true,
-      videoId: best.videoId,
-      titulo: best.titulo,
-      canal: best.canal,
-      duracao: best.duracao,
-      capa: best.capa,
-      instance
+      audioUrl: fullAudio?.audioUrl || '',
+      videoId: ytBest?.videoId || '',
+      titulo: fullAudio?.titulo || ytBest?.titulo || nomeMusica,
+      canal: fullAudio?.canal || ytBest?.canal || nomeArtista,
+      duracao: fullAudio?.duracao || ytBest?.duracao || 0,
+      capa: fullAudio?.capa || ytBest?.capa || '',
+      source: fullAudio ? fullAudio.source : 'youtube'
     });
   } catch (e: any) {
     return res.status(500).json({ sucesso: false, error: String(e?.message || e) });
