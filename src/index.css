@@ -153,6 +153,7 @@ button:disabled {
   align-items: center;
   gap: 6px;
   transition: all 0.2s;
+  white-space: nowrap;
 }
 
 .tab-btn:hover {
@@ -164,6 +165,28 @@ button:disabled {
   background: linear-gradient(135deg, #7b2cbf, #9d4edd);
   color: #fff;
   box-shadow: 0 2px 10px rgba(157, 78, 221, 0.4);
+}
+
+.tab-action-btn {
+  padding: 8px 14px;
+  border-radius: 9px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #070314;
+  background: linear-gradient(135deg, #00f0ff, #9d4edd);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s;
+  cursor: pointer;
+  border: none;
+  white-space: nowrap;
+  box-shadow: 0 2px 10px rgba(0, 240, 255, 0.35);
+}
+
+.tab-action-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 15px rgba(0, 240, 255, 0.55);
 }
 
 /* Main Area */
@@ -639,13 +662,19 @@ main {
   .tabs-bar {
     position: fixed;
     bottom: 84px;
-    left: 16px;
-    right: 16px;
+    left: 12px;
+    right: 12px;
     z-index: 45;
-    justify-content: space-around;
+    justify-content: flex-start;
     background: rgba(18, 12, 36, 0.95);
     backdrop-filter: blur(16px);
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .tabs-bar::-webkit-scrollbar {
+    display: none;
   }
   .floating-player {
     left: 12px;

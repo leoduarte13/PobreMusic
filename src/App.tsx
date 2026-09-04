@@ -24,8 +24,7 @@ import {
   pauseBackgroundAudioKeeper,
   requestScreenWakeLock,
   releaseScreenWakeLock,
-  toggleScreenWakeLock,
-  SILENT_WAV
+  toggleScreenWakeLock
 } from './lib/backgroundKeeper';
 import { safeFetchJson, extractSpotifyDirectly } from './lib/spotifyResolver';
 import { detectInputType, resolveYouTubeVideo, resolveYouTubePlaylist } from './lib/universalLinkResolver';
@@ -69,6 +68,7 @@ export default function App() {
   const [createModalTab, setCreateModalTab] = useState<'name' | 'link'>('name');
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [importPlaylistLink, setImportPlaylistLink] = useState('');
+  const [inlineLinkInput, setInlineLinkInput] = useState('');
   const [isImportingLink, setIsImportingLink] = useState(false);
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null);
   const [tracksToAddToPlaylist, setTracksToAddToPlaylist] = useState<Track[] | null>(null);
@@ -158,6 +158,8 @@ export default function App() {
   };
 
   // MediaSession Lockscreen integration
+  const playIndexRef = useRef<(i: number) => Promise<void>>(() => Promise.resolve());
+
   const setMetadata = useCallback((track: Track | null) => {
     if (!track) return;
     if (typeof window !== 'undefined' && (window as any).AndroidBridge?.updateTrackInfo) {
@@ -189,42 +191,45 @@ export default function App() {
     const current = indexRef.current;
     if (!list.length) return;
     if (repeatRef.current === 'one' && current !== null) {
-      playIndex(current);
+      playIndexRef.current(current);
       return;
     }
 
     let next = -1;
     if (shuffleRef.current) {
-      const choices = list.map((_, i) => i).filter(i => i !== current && (list[i]?.videoId || list[i]?.audioBlobUrl || list[i]?.audioUrl));
-      next = choices.length ? choices[Math.floor(Math.random() * choices.length)] : -1;
+      const choices = list.map((_, i) => i).filter(i => i !== current);
+      next = choices.length ? choices[Math.floor(Math.random() * choices.length)] : 0;
     } else {
-      let i = current === null ? 0 : current + 1;
-      while (i < list.length && !list[i]?.videoId && !list[i]?.audioBlobUrl && !list[i]?.audioUrl) i++;
-      if (i < list.length) next = i;
-      else if (repeatRef.current !== 'off') {
-        next = list.findIndex(t => !!t.videoId || !!t.audioBlobUrl || !!t.audioUrl);
+      const nextIndex = current === null ? 0 : current + 1;
+      if (nextIndex < list.length) {
+        next = nextIndex;
+      } else if (repeatRef.current !== 'off') {
+        next = 0;
       }
     }
-    if (next >= 0) playIndex(next);
-    else setStatus('ended');
+    if (next >= 0 && next < list.length) {
+      playIndexRef.current(next);
+    } else {
+      setStatus('ended');
+    }
   }, []);
 
   // Play previous track
   const prevTrack = useCallback(() => {
+    const list = tracksRef.current;
     const current = indexRef.current;
-    if (current === null) return;
+    if (!list.length || current === null) return;
     if (time > 3) {
       seekAudio(0);
       return;
     }
-    let next = current - 1;
-    while (next >= 0 && !tracksRef.current[next]?.videoId && !tracksRef.current[next]?.audioBlobUrl && !tracksRef.current[next]?.audioUrl) next--;
-    if (next < 0) {
-      for (let i = tracksRef.current.length - 1; i >= 0; i--) {
-        if (tracksRef.current[i]?.videoId || tracksRef.current[i]?.audioBlobUrl || tracksRef.current[i]?.audioUrl) { next = i; break; }
-      }
+    let prev = current - 1;
+    if (prev < 0) {
+      prev = list.length - 1;
     }
-    if (next >= 0) playIndex(next);
+    if (prev >= 0 && prev < list.length) {
+      playIndexRef.current(prev);
+    }
   }, [time]);
 
   // Initialize Native Audio Element and YouTube Engine
@@ -259,6 +264,11 @@ export default function App() {
       }
     };
     audio.onended = () => {
+      if (activeAudioSourceRef.current !== 'native') return;
+      // Guard against false/premature ended events (e.g. data URIs, empty/broken audio, or < 5s)
+      if (!audio.currentTime || audio.currentTime < 5) return;
+      if (audio.duration && audio.duration < 15) return;
+      if (audio.src?.startsWith('data:')) return;
       nextTrack();
     };
     audio.ontimeupdate = () => {
@@ -280,28 +290,41 @@ export default function App() {
         }
       }
     };
-    audio.onerror = () => {
+    audio.onerror = (e) => {
+      console.warn('Native audio error event:', e);
       if (activeAudioSourceRef.current === 'native') {
+        const currentIdx = indexRef.current;
+        const currentTrack = currentIdx !== null ? tracksRef.current[currentIdx] : null;
+        // Fallback to YouTube engine if available for the same track
+        if (currentTrack?.videoId && ytPlayerRef.current?.loadVideoById) {
+          console.log('Native audio failed, attempting YouTube fallback for:', currentTrack.nome_musica);
+          activeAudioSourceRef.current = 'yt';
+          setAudioSourceType('yt');
+          ytPlayerRef.current.loadVideoById(currentTrack.videoId);
+          ytPlayerRef.current.setVolume(muted ? 0 : volume);
+          ytPlayerRef.current.playVideo();
+          return;
+        }
         setStatus('error');
-        showToast('Erro no áudio. Tentando próxima faixa...');
-        nextTrack();
+        showToast('Não foi possível reproduzir este áudio.');
       }
     };
 
-    // Load YouTube Iframe API (1x1px background audio-only engine)
+    // Load YouTube Iframe API (background audio engine)
     loadYouTubeAPI().then(() => {
       if (!mounted) return;
       if (window.YT && window.YT.Player && !ytPlayerRef.current) {
+        const validOrigin = typeof window !== 'undefined' && window.location.origin && window.location.origin !== 'null' ? window.location.origin : undefined;
         ytPlayerRef.current = new window.YT.Player('myt-yt-engine', {
-          height: '1',
-          width: '1',
+          height: '180',
+          width: '240',
           videoId: 'dQw4w9WgXcQ',
           playerVars: {
             autoplay: 0,
             controls: 0,
             playsinline: 1,
             disablekb: 1,
-            origin: window.location.origin
+            ...(validOrigin ? { origin: validOrigin } : {})
           },
           events: {
             onReady: () => {
@@ -341,11 +364,10 @@ export default function App() {
               }
             },
             onError: (err: any) => {
-              console.warn('YouTube engine error code:', err.data);
+              console.warn('YouTube engine error code:', err?.data);
               if (activeAudioSourceRef.current === 'yt') {
                 setStatus('error');
-                showToast('Erro ao tocar faixa do YouTube. Indo para a próxima...');
-                nextTrack();
+                showToast('Não foi possível carregar esta faixa no momento.');
               }
             }
           }
@@ -424,15 +446,6 @@ export default function App() {
       try { ytPlayerRef.current.stopVideo(); } catch {}
     }
 
-    // Synchronously prime the native audio element within the user gesture window
-    // This unlocks playback on mobile iOS Safari and Android Chrome without being blocked!
-    if (nativeAudioRef.current) {
-      if (!nativeAudioRef.current.src || nativeAudioRef.current.src === '') {
-        nativeAudioRef.current.src = SILENT_WAV;
-      }
-      nativeAudioRef.current.play().catch(() => {});
-    }
-
     // Helper: Identify and reject stale 30s preview links
     const is30sPreview = (u?: string, durMs?: number) => {
       if (!u) return false;
@@ -460,8 +473,17 @@ export default function App() {
           startBackgroundAudioKeeper();
           requestScreenWakeLock().then(on => setIsWakeLockOn(on));
           prefetchNextTrack(i, list);
-        } catch {
-          setStatus('paused');
+        } catch (playErr) {
+          console.warn('Native audio play error, checking fallback:', playErr);
+          if (track.videoId && ytPlayerRef.current?.loadVideoById) {
+            activeAudioSourceRef.current = 'yt';
+            setAudioSourceType('yt');
+            ytPlayerRef.current.loadVideoById(track.videoId);
+            ytPlayerRef.current.setVolume(muted ? 0 : volume);
+            ytPlayerRef.current.playVideo();
+          } else {
+            setStatus('paused');
+          }
         }
       }
       return;
@@ -471,13 +493,13 @@ export default function App() {
     // Ensures full track playback in background and lockscreen
     try {
       setStatus('buffering');
-      showToast(`Carregando faixa completa de "${track.nome_musica}"...`);
+      showToast(`Carregando "${track.nome_musica}"...`);
       const r = await fetch(
         `${getApiBase()}/api/search?nome_musica=${encodeURIComponent(track.nome_musica)}&nome_artista=${encodeURIComponent(track.nome_artista)}`,
         { cache: 'no-store' }
       );
       const result = await safeFetchJson(r);
-      if (r.ok && result.sucesso) {
+      if (r.ok && result?.sucesso) {
         if (result.audioUrl && !is30sPreview(result.audioUrl, result.duracao * 1000)) {
           track.audioUrl = result.audioUrl;
         }
@@ -511,37 +533,37 @@ export default function App() {
           }
         }
 
-        // Fallback to YouTube engine if HTML5 stream not available
-        if (result.videoId) {
+        // Fallback to YouTube engine if HTML5 stream not available or failed
+        if (result.videoId && ytPlayerRef.current?.loadVideoById) {
           activeAudioSourceRef.current = 'yt';
           setAudioSourceType('yt');
-          if (ytPlayerRef.current?.loadVideoById) {
-            ytPlayerRef.current.loadVideoById(result.videoId);
-            ytPlayerRef.current.setVolume(muted ? 0 : volume);
-            ytPlayerRef.current.playVideo();
-          }
+          ytPlayerRef.current.loadVideoById(result.videoId);
+          ytPlayerRef.current.setVolume(muted ? 0 : volume);
+          ytPlayerRef.current.playVideo();
           return;
         }
       }
     } catch (e) {
-      console.warn('HTML5 search failed, checking existing videoId', e);
+      console.warn('Audio search failed, checking existing videoId', e);
     }
 
     // Engine 2: Existing YouTube VideoId Fallback
-    if (track.videoId) {
+    if (track.videoId && ytPlayerRef.current?.loadVideoById) {
       activeAudioSourceRef.current = 'yt';
       setAudioSourceType('yt');
-      if (ytPlayerRef.current?.loadVideoById) {
-        ytPlayerRef.current.loadVideoById(track.videoId);
-        ytPlayerRef.current.setVolume(muted ? 0 : volume);
-        ytPlayerRef.current.playVideo();
-      }
+      ytPlayerRef.current.loadVideoById(track.videoId);
+      ytPlayerRef.current.setVolume(muted ? 0 : volume);
+      ytPlayerRef.current.playVideo();
       return;
     }
 
-    showToast(`Áudio não disponível para "${track.nome_musica}". Indo para próxima...`);
-    nextTrack();
-  }, [muted, volume, nextTrack, setMetadata]);
+    setStatus('paused');
+    showToast(`Áudio não encontrado para "${track.nome_musica}".`);
+  }, [muted, volume, setMetadata]);
+
+  useEffect(() => {
+    playIndexRef.current = playIndex;
+  }, [playIndex]);
 
   // MediaSession Action Handlers
   useEffect(() => {
@@ -613,8 +635,7 @@ export default function App() {
 
   const togglePlayPause = () => {
     if (indexRef.current === null) {
-      const first = tracksRef.current.findIndex(t => !!t.videoId || !!t.audioBlobUrl || !!t.audioUrl);
-      if (first >= 0) playIndex(first);
+      if (tracksRef.current.length > 0) playIndex(0);
       return;
     }
 
@@ -885,8 +906,8 @@ export default function App() {
       return;
     }
     const detected = detectInputType(val);
-    if (detected.kind !== 'spotify' && detected.kind !== 'youtube_playlist') {
-      showToast('Link não reconhecido como playlist do Spotify ou YouTube.');
+    if (detected.kind !== 'spotify' && detected.kind !== 'youtube_playlist' && detected.kind !== 'youtube_video') {
+      showToast('Link não reconhecido. Cole um link do Spotify ou YouTube.');
       return;
     }
 
@@ -897,6 +918,16 @@ export default function App() {
 
       if (detected.kind === 'youtube_playlist') {
         plData = await resolveYouTubePlaylist(detected.listId, detected.url);
+      } else if (detected.kind === 'youtube_video') {
+        const ytTrack = await resolveYouTubeVideo(detected.videoId, detected.url);
+        plData = {
+          sucesso: true,
+          playlist_id: detected.videoId || 'yt_single',
+          nome_playlist: ytTrack.nome_musica,
+          total_faixas: 1,
+          capa_playlist: ytTrack.capa,
+          faixas: [ytTrack]
+        };
       } else if (detected.kind === 'spotify') {
         try {
           const response = await fetch(`${getApiBase()}/api/public-playlist?url=${encodeURIComponent(val)}`, { cache: 'no-store' });
@@ -920,6 +951,7 @@ export default function App() {
       setActiveTab('cloud_playlists');
       setIsCreateModalOpen(false);
       setImportPlaylistLink('');
+      setInlineLinkInput('');
       showToast(`✔ Playlist "${saved.nome_playlist}" (${saved.total_faixas} faixas) salva com sucesso!`);
     } catch (err: any) {
       showToast(err?.message || 'Erro ao importar playlist.');
@@ -1030,8 +1062,7 @@ export default function App() {
     });
     setTracks(pl.faixas);
     setActiveTab('queue');
-    const first = pl.faixas.findIndex(t => !!t.videoId || !!t.audioBlobUrl || !!t.audioUrl);
-    if (first >= 0) playIndex(first);
+    if (pl.faixas.length > 0) playIndex(0);
     showToast(`▶ Tocando playlist "${pl.nome_playlist}"`);
   };
 
@@ -1148,8 +1179,8 @@ export default function App() {
 
   return (
     <div className="app-container">
-      {/* Hidden YouTube Engine - Audio Only (1x1 px) */}
-      <div id="myt-yt-engine" style={{ position: 'fixed', top: -9999, left: -9999, width: 1, height: 1, pointerEvents: 'none' }} />
+      {/* Hidden YouTube Engine - Audio Only with standard dimensions for non-blocked playback */}
+      <div id="myt-yt-engine" style={{ position: 'fixed', bottom: 0, right: 0, width: 240, height: 180, opacity: 0.001, pointerEvents: 'none', zIndex: -1 }} />
 
       {/* Toast Notification */}
       {notification && (
@@ -1210,6 +1241,17 @@ export default function App() {
               ☁ Músicas ({cloudTracks.length})
             </button>
             <button
+              className="tab-action-btn"
+              onClick={() => {
+                setTracksToAddToPlaylist(null);
+                setCreateModalTab('link');
+                setIsCreateModalOpen(true);
+              }}
+              title="Adicionar ou importar playlist pelo link do Spotify ou YouTube"
+            >
+              🔗 + Adicionar por Link
+            </button>
+            <button
               className="tab-btn"
               style={{
                 borderColor: isWakeLockOn ? '#00f0ff' : 'rgba(0, 240, 255, 0.3)',
@@ -1226,22 +1268,48 @@ export default function App() {
         </div>
       </header>
 
-      {/* Cloud Guarantee Top Banner */}
+      {/* Cloud Guarantee Top Banner with Quick Add Playlist Link */}
       <div style={{
         background: 'rgba(0, 240, 255, 0.08)',
         borderBottom: '1px solid rgba(0, 240, 255, 0.18)',
         padding: '6px 16px',
         display: 'flex',
         alignItems: 'center',
-        justifyContent: 'center',
+        justifyContent: 'space-between',
+        flexWrap: 'wrap',
         gap: 8,
         fontSize: 12,
         color: '#00f0ff',
         fontWeight: 600
       }}>
-        <span>☁ Armazenamento 100% na Nuvem (Firebase)</span>
-        <span style={{ color: '#9d8db8' }}>•</span>
-        <span>0 MB ocupados no seu dispositivo</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span>☁ Armazenamento 100% na Nuvem (Firebase)</span>
+          <span style={{ color: '#9d8db8' }}>•</span>
+          <span>0 MB ocupados no seu dispositivo</span>
+        </div>
+        <button
+          onClick={() => {
+            setTracksToAddToPlaylist(null);
+            setCreateModalTab('link');
+            setIsCreateModalOpen(true);
+          }}
+          style={{
+            background: 'linear-gradient(135deg, rgba(0, 240, 255, 0.25), rgba(157, 78, 221, 0.35))',
+            border: '1px solid #00f0ff',
+            color: '#fff',
+            borderRadius: 8,
+            padding: '4px 12px',
+            fontSize: 11,
+            fontWeight: 700,
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            transition: 'all 0.2s'
+          }}
+        >
+          <span>🔗</span> Adicionar Playlist pelo Link
+        </button>
       </div>
 
       {/* Main Content Area */}
@@ -1354,8 +1422,7 @@ export default function App() {
                     <button
                       className="btn-primary"
                       onClick={() => {
-                        const first = tracks.findIndex(t => !!t.videoId || !!t.audioBlobUrl || !!t.audioUrl);
-                        if (first >= 0) playIndex(first);
+                        if (tracks.length > 0) playIndex(0);
                       }}
                     >
                       ▶ Tocar Playlist
@@ -1375,6 +1442,17 @@ export default function App() {
                       }}
                     >
                       + Adicionar a uma Playlist
+                    </button>
+                    <button
+                      className="pill-btn"
+                      style={{ background: 'linear-gradient(135deg, rgba(0, 240, 255, 0.2), rgba(157, 78, 221, 0.3))', borderColor: '#00f0ff', color: '#fff' }}
+                      onClick={() => {
+                        setTracksToAddToPlaylist(null);
+                        setCreateModalTab('link');
+                        setIsCreateModalOpen(true);
+                      }}
+                    >
+                      🔗 + Importar Playlist (Link)
                     </button>
                   </div>
                 </div>
@@ -1479,13 +1557,25 @@ export default function App() {
               <div style={{ textAlign: 'center', padding: '60px 20px', color: '#6d5d88' }}>
                 <div style={{ fontSize: 36, marginBottom: 10 }}>🎵</div>
                 <p>Nenhuma música na fila.</p>
-                <button
-                  className="btn-primary"
-                  style={{ margin: '14px auto 0' }}
-                  onClick={() => setActiveTab('search')}
-                >
-                  Pesquisar Músicas
-                </button>
+                <div style={{ display: 'flex', gap: 10, justifyContent: 'center', marginTop: 14, flexWrap: 'wrap' }}>
+                  <button
+                    className="btn-primary"
+                    onClick={() => setActiveTab('search')}
+                  >
+                    Pesquisar Músicas
+                  </button>
+                  <button
+                    className="pill-btn"
+                    style={{ background: 'rgba(0, 240, 255, 0.15)', borderColor: '#00f0ff', color: '#00f0ff' }}
+                    onClick={() => {
+                      setTracksToAddToPlaylist(null);
+                      setCreateModalTab('link');
+                      setIsCreateModalOpen(true);
+                    }}
+                  >
+                    🔗 Importar Playlist por Link
+                  </button>
+                </div>
               </div>
             ) : (
               tracks.map((track, i) => {
@@ -1614,6 +1704,66 @@ export default function App() {
                   </div>
                 </div>
 
+                {/* Quick Add Playlist by Link Card */}
+                <div style={{
+                  background: 'linear-gradient(135deg, rgba(28, 18, 54, 0.95), rgba(16, 10, 32, 0.95))',
+                  border: '1px solid rgba(0, 240, 255, 0.35)',
+                  borderRadius: 16,
+                  padding: '16px 20px',
+                  marginBottom: 20,
+                  boxShadow: '0 4px 20px rgba(0, 0, 0, 0.4)'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <span style={{ fontSize: 22 }}>🔗</span>
+                      <div>
+                        <b style={{ color: '#fff', fontSize: 14, display: 'block' }}>Adicionar Playlist pelo Link</b>
+                        <span style={{ fontSize: 12, color: '#00f0ff' }}>Cole o link do Spotify ou YouTube para importar playlists para a Nuvem (0 MB)</span>
+                      </div>
+                    </div>
+                    <span style={{ fontSize: 11, color: '#9d8db8' }}>Spotify • YouTube</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                    <input
+                      value={inlineLinkInput}
+                      onChange={e => setInlineLinkInput(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' && !isImportingLink && inlineLinkInput.trim()) {
+                          const lk = inlineLinkInput.trim();
+                          setInlineLinkInput('');
+                          handleImportPlaylistFromLink(lk);
+                        }
+                      }}
+                      placeholder="Cole o link da playlist (Spotify ou YouTube) aqui..."
+                      style={{
+                        flex: 1,
+                        minWidth: 260,
+                        background: '#0d0718',
+                        border: '1px solid rgba(0, 240, 255, 0.35)',
+                        borderRadius: 10,
+                        padding: '10px 14px',
+                        color: '#fff',
+                        fontSize: 13,
+                        outline: 'none'
+                      }}
+                    />
+                    <button
+                      className="btn-primary"
+                      style={{ padding: '10px 20px', fontSize: 13, whiteSpace: 'nowrap' }}
+                      disabled={isImportingLink || !inlineLinkInput.trim()}
+                      onClick={() => {
+                        if (inlineLinkInput.trim()) {
+                          const lk = inlineLinkInput.trim();
+                          setInlineLinkInput('');
+                          handleImportPlaylistFromLink(lk);
+                        }
+                      }}
+                    >
+                      {isImportingLink ? 'Importando…' : '☁ Adicionar Playlist'}
+                    </button>
+                  </div>
+                </div>
+
                 {cloudPlaylists.length === 0 ? (
                   <div style={{ textAlign: 'center', padding: '60px 20px', color: '#6d5d88', background: 'rgba(22,15,43,0.4)', borderRadius: 18, border: '1px dashed rgba(0,240,255,0.3)' }}>
                     <div style={{ fontSize: 40, marginBottom: 10 }}>☁</div>
@@ -1734,16 +1884,17 @@ export default function App() {
                     >
                       ← Voltar para Playlists na Nuvem
                     </button>
-                    <div style={{ display: 'flex', gap: 8 }}>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                       <button
                         className="pill-btn"
+                        style={{ background: 'linear-gradient(135deg, rgba(0, 240, 255, 0.2), rgba(157, 78, 221, 0.3))', borderColor: '#00f0ff', color: '#fff', fontWeight: 700 }}
                         onClick={() => {
                           setTracksToAddToPlaylist(null);
                           setCreateModalTab('link');
                           setIsCreateModalOpen(true);
                         }}
                       >
-                        ☁ Importar Outra Playlist
+                        🔗 + Importar Outra Playlist (Link)
                       </button>
                       <button
                         className="btn-primary"
@@ -1784,6 +1935,67 @@ export default function App() {
                           🗑 Excluir Playlist da Nuvem
                         </button>
                       </div>
+                    </div>
+                  </div>
+
+                  {/* Quick Add Another Playlist by Link Card - Always visible right after importing */}
+                  <div style={{
+                    background: 'linear-gradient(135deg, rgba(28, 18, 54, 0.95), rgba(16, 10, 32, 0.95))',
+                    border: '1px solid rgba(0, 240, 255, 0.35)',
+                    borderRadius: 16,
+                    padding: '16px 20px',
+                    marginBottom: 18,
+                    marginTop: 18,
+                    boxShadow: '0 4px 20px rgba(0, 0, 0, 0.4)'
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <span style={{ fontSize: 22 }}>🔗</span>
+                        <div>
+                          <b style={{ color: '#fff', fontSize: 14, display: 'block' }}>Adicionar Outra Playlist pelo Link</b>
+                          <span style={{ fontSize: 12, color: '#00f0ff' }}>Cole o link do Spotify ou YouTube para importar mais playlists para sua Nuvem</span>
+                        </div>
+                      </div>
+                      <span style={{ fontSize: 11, color: '#9d8db8' }}>Spotify • YouTube • 0 MB</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                      <input
+                        value={inlineLinkInput}
+                        onChange={e => setInlineLinkInput(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter' && !isImportingLink && inlineLinkInput.trim()) {
+                            const lk = inlineLinkInput.trim();
+                            setInlineLinkInput('');
+                            handleImportPlaylistFromLink(lk);
+                          }
+                        }}
+                        placeholder="Cole outro link de playlist do Spotify ou YouTube..."
+                        style={{
+                          flex: 1,
+                          minWidth: 260,
+                          background: '#0d0718',
+                          border: '1px solid rgba(0, 240, 255, 0.35)',
+                          borderRadius: 10,
+                          padding: '10px 14px',
+                          color: '#fff',
+                          fontSize: 13,
+                          outline: 'none'
+                        }}
+                      />
+                      <button
+                        className="btn-primary"
+                        style={{ padding: '10px 20px', fontSize: 13, whiteSpace: 'nowrap' }}
+                        disabled={isImportingLink || !inlineLinkInput.trim()}
+                        onClick={() => {
+                          if (inlineLinkInput.trim()) {
+                            const lk = inlineLinkInput.trim();
+                            setInlineLinkInput('');
+                            handleImportPlaylistFromLink(lk);
+                          }
+                        }}
+                      >
+                        {isImportingLink ? 'Importando…' : '☁ Importar Playlist'}
+                      </button>
                     </div>
                   </div>
 
